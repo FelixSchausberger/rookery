@@ -1,0 +1,15 @@
+# Prek configuration. Run through `nix develop --command prek run --all-files`;
+# CI runs the same command.
+repos:
+  - repo: local
+    hooks:
+      - id: treefmt
+        name: treefmt
+        entry: nix fmt -- --ci
+        language: system
+        pass_filenames: false
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
