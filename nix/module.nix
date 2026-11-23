@@ -1,68 +1,69 @@
-# Home Manager module for ocws.
+# Home Manager module for Rookery.
 #
 # The package reads its configuration from the environment at runtime, so the
 # module wraps the binary with the option values as defaults. A runtime
-# override still wins, which keeps `OCWS_BASE=... ocws ls` and the fixture
-# tests working unchanged.
+# ROOKERY_* variable still wins; the pre-rename OCWS_* names are read as
+# fallbacks when the new name is unset.
 inputs: {
   config,
   lib,
   pkgs,
   ...
 }: let
-  cfg = config.programs.ocws;
+  cfg = config.programs.rookery;
 
   wrapperArgs =
     [
       "--set-default"
-      "OCWS_WS_PREFIX"
+      "ROOKERY_WS_PREFIX"
       cfg.workspacePrefix
       "--set-default"
-      "OCWS_TRUNK"
+      "ROOKERY_TRUNK"
       cfg.trunk
       "--set-default"
-      "OCWS_GC_AGE"
+      "ROOKERY_GC_AGE"
       (toString cfg.gc.age)
       "--set-default"
-      "OCWS_GC_EMPTY_AGE"
+      "ROOKERY_GC_EMPTY_AGE"
       (toString cfg.gc.emptyAge)
       "--set-default"
-      "OCWS_GC_SESSION_AGE"
+      "ROOKERY_GC_SESSION_AGE"
       (toString cfg.gc.sessionAge)
       "--set-default"
-      "OCWS_WAIT_STALE_DAYS"
+      "ROOKERY_WAIT_STALE_DAYS"
       (toString cfg.waitStaleDays)
       "--set-default"
-      "OCWS_HOOK_PRE_CREATE"
+      "ROOKERY_HOOK_PRE_CREATE"
       cfg.hooks.preCreate
       "--set-default"
-      "OCWS_HOOK_POST_CREATE"
+      "ROOKERY_HOOK_POST_CREATE"
       cfg.hooks.postCreate
       "--set-default"
-      "OCWS_HOOK_PRE_DELETE"
+      "ROOKERY_HOOK_PRE_DELETE"
       cfg.hooks.preDelete
       "--set-default"
-      "OCWS_HOOK_POST_DELETE"
+      "ROOKERY_HOOK_POST_DELETE"
       cfg.hooks.postDelete
     ]
-    ++ lib.optionals (cfg.base != null) ["--set-default" "OCWS_BASE" cfg.base];
+    ++ lib.optionals (cfg.base != null) ["--set-default" "ROOKERY_BASE" cfg.base];
 
   finalPackage =
-    pkgs.runCommand "ocws-configured" {
+    pkgs.runCommand "rookery-configured" {
       nativeBuildInputs = [pkgs.makeWrapper];
     } ''
       mkdir -p $out/bin
-      makeWrapper ${cfg.package}/bin/ocws $out/bin/ocws ${lib.escapeShellArgs wrapperArgs}
+      makeWrapper ${cfg.package}/bin/rookery $out/bin/rookery ${lib.escapeShellArgs wrapperArgs}
+      ln -s rookery $out/bin/ocws
     '';
 in {
-  options.programs.ocws = {
-    enable = lib.mkEnableOption "the ocws jj workspace seat manager";
+  options.programs.rookery = {
+    enable = lib.mkEnableOption "the Rookery jj workspace manager";
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage "${inputs.self}/packages/ocws.nix" {};
-      defaultText = lib.literalExpression "the ocws package from this flake";
-      description = "The ocws package to wrap with the options below.";
+      default = pkgs.callPackage "${inputs.self}/packages/rookery.nix" {};
+      defaultText = lib.literalExpression "the Rookery package from this flake";
+      description = "The Rookery package to wrap with the options below.";
     };
 
     base = lib.mkOption {
@@ -122,7 +123,7 @@ in {
     };
 
     gc = {
-      enable = lib.mkEnableOption "the daily ocws GC user timer";
+      enable = lib.mkEnableOption "the daily rookery GC user timer";
 
       repo = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -170,42 +171,42 @@ in {
       type = lib.types.package;
       readOnly = true;
       description = ''
-        The wrapped package. Consumers that invoke ocws by absolute path (a
+        The wrapped package. Consumers that invoke rookery by absolute path (a
         terminal keybinding, a systemd unit) must use this, not `package`.
       '';
     };
   };
 
   config = lib.mkIf cfg.enable {
-    programs.ocws.finalPackage = finalPackage;
+    programs.rookery.finalPackage = finalPackage;
 
     home.packages = [cfg.finalPackage];
 
     assertions = [
       {
         assertion = !cfg.gc.enable || cfg.gc.repo != null;
-        message = "programs.ocws.gc.repo must be set when programs.ocws.gc.enable is true";
+        message = "programs.rookery.gc.repo must be set when programs.rookery.gc.enable is true";
       }
     ];
 
     # The guard lives in the script, not in WorkingDirectory: a consumer host
     # that imports the module without the checkout must exit 0, while systemd
     # fails the unit before ExecStart when a WorkingDirectory is missing.
-    systemd.user.services.ocws-gc = lib.mkIf (cfg.gc.enable && cfg.gc.repo != null) {
+    systemd.user.services.rookery-gc = lib.mkIf (cfg.gc.enable && cfg.gc.repo != null) {
       Unit.Description = "Reclaim finished jj workspaces";
       Service = {
         Type = "oneshot";
-        ExecStart = toString (pkgs.writeShellScript "ocws-gc" ''
+        ExecStart = toString (pkgs.writeShellScript "rookery-gc" ''
           set -euo pipefail
           repo=${lib.escapeShellArg cfg.gc.repo}
           [ -d "$repo" ] || exit 0
           cd "$repo"
-          ${cfg.finalPackage}/bin/ocws gc
+          ${cfg.finalPackage}/bin/rookery gc
         '');
       };
     };
 
-    systemd.user.timers.ocws-gc = lib.mkIf (cfg.gc.enable && cfg.gc.repo != null) {
+    systemd.user.timers.rookery-gc = lib.mkIf (cfg.gc.enable && cfg.gc.repo != null) {
       Install.WantedBy = ["timers.target"];
       Timer = {
         OnCalendar = cfg.gc.onCalendar;

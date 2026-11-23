@@ -1,5 +1,5 @@
 {
-  description = "jj workspace seats for OpenCode agents";
+  description = "A rookery of jj workspaces for coding agents";
 
   inputs = {
     # 26.05: the channel the project is developed against. Consumers that pin
@@ -28,19 +28,19 @@
         pkgs,
         ...
       }: let
-        ocws = pkgs.callPackage ./packages/ocws.nix {};
+        rookery = pkgs.callPackage ./packages/rookery.nix {};
       in {
-        packages.ocws = ocws;
-        packages.default = ocws;
+        packages.rookery = rookery;
+        packages.default = rookery;
 
         # The board's classification, cache key and freshness rules against a
         # fixture repository: cold/warm/serial/parallel output equality,
         # invalidation on describe, push, fetch and workspace add, and live,
         # session and wait state that must never come from the cache.
-        checks.ocws-board =
-          pkgs.runCommand "ocws-board-test" {
+        checks.rookery-board =
+          pkgs.runCommand "rookery-board-test" {
             nativeBuildInputs = [
-              ocws
+              rookery
               pkgs.jujutsu
               pkgs.git
               pkgs.sqlite
@@ -55,14 +55,14 @@
         devShells.default = pkgs.mkShell {
           inputsFrom = [config.treefmt.build.devShell];
           packages = [
-            ocws
+            rookery
             pkgs.jujutsu
             pkgs.git
             pkgs.sqlite
             pkgs.shellcheck
             pkgs.prek
           ];
-          name = "ocws";
+          name = "rookery";
         };
 
         treefmt.config = {
