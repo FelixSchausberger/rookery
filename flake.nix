@@ -52,6 +52,31 @@
             touch $out
           '';
 
+        # The task layer against a fixture repository and a fake herdr: NDJSON
+        # board, store writes and maintenance across rename/removal, cleanup
+        # marks and the sweep, seat focus and task seats, and corruption
+        # handling. Nothing touches the real base or cache.
+        checks.rookery-tasks =
+          pkgs.runCommand "rookery-tasks-test" {
+            nativeBuildInputs = [
+              rookery
+              pkgs.jujutsu
+              pkgs.git
+              pkgs.sqlite
+              pkgs.jq
+              pkgs.util-linux
+              pkgs.gnugrep
+              pkgs.gnused
+              pkgs.coreutils
+              pkgs.bash
+            ];
+          } ''
+            cp ${./tests/tasks.sh} tasks.sh
+            chmod +x tasks.sh
+            bash tasks.sh
+            touch $out
+          '';
+
         devShells.default = pkgs.mkShell {
           inputsFrom = [config.treefmt.build.devShell];
           packages = [
@@ -59,6 +84,7 @@
             pkgs.jujutsu
             pkgs.git
             pkgs.sqlite
+            pkgs.jq
             pkgs.shellcheck
             pkgs.prek
           ];
