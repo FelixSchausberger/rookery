@@ -4,7 +4,8 @@
 the workspace, claims it with a change description, starts OpenCode rooted
 there, classifies every workspace from jj state, and reclaims the finished
 ones. It also drives herdr seats: a new workspace, a new herdr tab, and a
-lookup from an OpenCode session back to its pane.
+lookup from an OpenCode session back to its pane. Tasks group workspaces that
+belong to one piece of work, and the JSON board feeds a TUI client.
 
 A rookery is a colony of nests in one place: one base directory, one workspace
 per task, one agent per workspace. A rook is also a piece on a board, which is
@@ -58,22 +59,35 @@ Without Nix, run the package definition with `nix build` or copy
 
 ## Commands
 
-| command                                                 | effect                                                         |
-| ------------------------------------------------------- | -------------------------------------------------------------- |
-| `rookery <task> [-- <opencode args>]`                   | create a workspace and start OpenCode there                    |
-| `rookery herdr [--json] [--no-focus] [--wait] [<task>]` | create a workspace in a new herdr tab and start OpenCode       |
-| `rookery tab <task>`                                    | create a workspace in a new zellij tab                         |
-| `rookery seat [--json]`                                 | print the calling agent's herdr workspace, tab, and pane       |
-| `rookery title <text...>`                               | claim the current seat: describe, rename the workspace and tab |
-| `rookery ls [--counts\|--board] [--refresh]`            | classify every workspace                                       |
-| `rookery wait <task> [reason...]`                       | park a workspace; gc keeps it until `rookery go`               |
-| `rookery go <task>`                                     | release a parked workspace                                     |
-| `rookery done [--force] <task>`                         | remove a finished workspace                                    |
-| `rookery rm [--force] <task>`                           | remove a workspace                                             |
-| `rookery gc`                                            | reclaim empty and merged workspaces idle past the age gate     |
+| command                                                             | effect                                                         |
+| ------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `rookery <task> [-- <opencode args>]`                               | create a workspace and start OpenCode there                    |
+| `rookery herdr [--json] [--no-focus] [--wait] [--task ID] [<task>]` | create a workspace in a new herdr tab and start OpenCode       |
+| `rookery tab <task>`                                                | create a workspace in a new zellij tab                         |
+| `rookery seat [--json]`                                             | print the calling agent's herdr workspace, tab, and pane       |
+| `rookery title <text...>`                                           | claim the current seat: describe, rename the workspace and tab |
+| `rookery ls [--counts\|--board\|--json] [--refresh]`                | classify every workspace                                       |
+| `rookery task add <title...> [--id ID] [--notes TEXT]`              | create a backlog task                                          |
+| `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                       |
+| `rookery task list [--json]`                                        | list tasks and their workspaces                                |
+| `rookery task done <task>`                                          | mark every workspace of the task for cleanup                   |
+| `rookery task archive <task>`                                       | archive a task whose workspaces are gone                       |
+| `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                         |
+| `rookery clean --unmark [--current\|<workspace>]`                   | clear the cleanup mark                                         |
+| `rookery clean --apply`                                             | remove marked workspaces that are safe to remove               |
+| `rookery open <workspace\|task>`                                    | focus a workspace's seat                                       |
+| `rookery wait <task> [reason...]`                                   | park a workspace; gc keeps it until `rookery go`               |
+| `rookery go <task>`                                                 | release a parked workspace                                     |
+| `rookery done [--force] <task>`                                     | remove a finished workspace                                    |
+| `rookery rm [--force] <task>`                                       | remove a workspace                                             |
+| `rookery gc`                                                        | reclaim empty and merged workspaces idle past the age gate     |
 
 `rookery ls --counts` prints eight integers in this order: total, empty, merged,
 unpushed, in-flight, conflict, stale, waitold. The order is a consumer contract.
+`rookery ls --json` prints one JSON object per workspace (NDJSON) with `task`,
+`workspace`, `path`, `state`, `hold`, `description`, `session` (title and last
+update), `wait` (reason and age), `clean` (age), and `age` (the workspace
+target's commit age). Task ids are null for ungrouped workspaces.
 
 ## Workspace states
 
@@ -92,8 +106,31 @@ squash-merged PR.
 
 The board cache is keyed on the jj operation id, the trunk commit, and the
 workspace list, so a describe, push, fetch, workspace add, forget, or rename
-invalidates it. Liveness, session recency, and wait markers are read fresh on
-every board; they never come from the cache.
+invalidates it. Liveness, session recency, wait markers, and clean markers are
+read fresh on every board; they never come from the cache.
+
+## Tasks and cleanup
+
+A task groups zero or more workspaces under one stable id, stored in
+`ROOKERY_BASE/tasks.json`. Writes serialize on `tasks.json.lock` and replace the
+document atomically, so read paths (`ls --json`, `task list --json`) take no
+lock. A workspace belongs to at most one task; `task assign` refuses to move a
+grouped workspace unless `--move` is given. A workspace with no task is still a
+row on the board, with `task: null`. `rookery title` follows a rename, and every
+removal path drops the workspace from its task.
+
+`rookery clean` writes a `<workspace>.clean` marker beside the wait marker. The
+mark is a person's request, not a stored state: a task's lane is always derived
+from its workspaces. `rookery clean --apply` removes a marked workspace only
+when it classifies as `empty` or `merged`, no process is rooted in its
+directory, and it holds no unpushed, in-flight, or conflicted work. The mark is
+consent for the session-age hold that `gc` otherwise applies. Every removal
+path clears both markers.
+
+`rookery open` focuses an existing seat through the CLI: a workspace name
+resolves directly, and a task id resolves to a live grouped workspace or the
+first one jj still lists. The verb is backend-neutral; the herdr-specific
+lookup stays inside the command.
 
 ## Liveness and GC
 
@@ -163,12 +200,18 @@ nix develop
 nix fmt
 nix flake check
 bash tests/board.sh
+bash tests/tasks.sh
 ```
 
 `tests/board.sh` builds a throwaway jj repository with a local git origin and
 exercises classification, the cache, liveness, sessions, wait markers, the
 prefix seam, gc, the `ocws` alias, and the `OCWS_*` fallback. It never touches a
 real workspace or the user's cache.
+
+`tests/tasks.sh` adds the task layer against the same kind of fixture and a fake
+herdr: the NDJSON board, store writes and concurrent writers, maintenance across
+rename and removal, cleanup marks and the sweep, seat focus, task seats, and
+corrupt-store handling.
 
 ## License
 
