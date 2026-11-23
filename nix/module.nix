@@ -175,12 +175,25 @@ in {
         terminal keybinding, a systemd unit) must use this, not `package`.
       '';
     };
+
+    tui = {
+      enable = lib.mkEnableOption "the Rookery board TUI";
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.rookery-tui;
+        defaultText = lib.literalExpression "the rookery-tui package from this flake";
+        description = "The board TUI binary to install.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
     programs.rookery.finalPackage = finalPackage;
 
-    home.packages = [cfg.finalPackage];
+    home.packages =
+      [cfg.finalPackage]
+      ++ lib.optional cfg.tui.enable cfg.tui.package;
 
     assertions = [
       {
