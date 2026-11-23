@@ -56,6 +56,13 @@ jj config set --repo user.email "ocws@example.invalid" >/dev/null 2>&1
 git remote add origin "$work/origin"
 jj git fetch >/dev/null 2>&1
 jj bookmark track main@origin >/dev/null 2>&1
+
+# A repository with only the primary workspace must classify too. jj renders
+# an empty working-copy name for the sole primary, so the target has to come
+# from the workspace list rather than the working-copy template.
+[ "$(ocws ls --counts --refresh)" = "0 0 0 0 0 0 0 0" ] || fail "fresh repo counts"
+ocws ls --board | grep -Fq "ocws board -" || fail "fresh repo board"
+
 jj workspace add "$OCWS_BASE/${ws_prefix}alpha" --name alpha -r main@origin -m "alpha: started" >/dev/null 2>&1
 jj workspace add "$OCWS_BASE/${ws_prefix}beta" --name beta -r main@origin -m "beta: started" >/dev/null 2>&1
 

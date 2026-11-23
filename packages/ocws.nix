@@ -574,7 +574,7 @@ writeShellApplication {
     # the only per-commit jj work left and runs in a bounded pool; its results
     # land in absorbed-<commit> files that absorbed_of reads.
     board_classify() {
-      local dir="$1" cid parents flags targets name
+      local dir="$1" cid parents flags name_list name
       local -a commit_ids=() tnames=() pids=()
       local jobs
       classify_ok=1
@@ -589,11 +589,11 @@ writeShellApplication {
         echo "ocws: cannot classify workspaces" >&2
         return 1
       fi
-      while IFS=$'\t' read -r cid parents flags targets; do
+      while IFS=$'\t' read -r cid parents flags name_list; do
         [ -n "$cid" ] || continue
         cls_parent_of["$cid"]="$parents"
         cls_flags_of["$cid"]="$flags"
-        IFS=',' read -r -a tnames <<<"$targets"
+        IFS=',' read -r -a tnames <<<"$name_list"
         for name in "''${tnames[@]}"; do
           [ -n "$name" ] && cls_target_of["$name"]="$cid"
         done
@@ -620,8 +620,9 @@ writeShellApplication {
       done
       wait
       absorb_dir="$dir"
-      for name in "''${ws_names[@]}"; do
-        if ! board_state_for "$name"; then
+      for i in "''${!ws_names[@]}"; do
+        name="''${ws_names[$i]}"
+        if ! board_state_for "$name" "''${targets[$i]}"; then
           echo "ocws: cannot classify workspace '$name'" >&2
           absorb_dir=""
           return 1
@@ -636,8 +637,13 @@ writeShellApplication {
     # included only as the target itself and stops the walk, which matches
     # "T | (ancestors(T) ~ ::trunk)". Order never matters here, so the
     # fleet scan needs no worker ordering.
+    #
+    # The target comes from the workspace list, not only from the fleet
+    # template: jj renders an empty working-copy name for the sole primary
+    # workspace, so a fresh repository with no secondary has no mapping in
+    # cls_target_of and would otherwise be unclassifiable.
     board_state_for() {
-      local name="$1" start="''${cls_target_of[$1]:-}" cid parents flags lines=""
+      local name="$1" start="''${2:-''${cls_target_of[$1]:-}}" cid parents flags lines=""
       local -a queue=() seen=()
       [ -n "$start" ] || return 1
       queue=("$start")
