@@ -1,7 +1,7 @@
 // Board state and key handling. The TUI owns only a cached view: every write
 // becomes an Action whose argv the runtime hands to the CLI.
 use crate::model::{Board, TaskView, Workspace};
-use crate::view::{self, CardKey, LaneModel};
+use crate::view::{self, CardKey, Filter, LaneModel, Sort};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rookery_core::util::now_secs;
 
@@ -60,6 +60,11 @@ pub enum Mode {
         workspace: String,
         selected: usize,
     },
+    Filter {
+        text: String,
+        before_query: String,
+        before_selection: Option<CardKey>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -75,6 +80,9 @@ pub struct App {
     pub clock: i64,
     pub detail: bool,
     pub help_scroll: usize,
+    pub filter: Filter,
+    pub query: String,
+    pub sort: Sort,
     pub scroll: [ScrollState; 5],
     pub viewports: [usize; 5],
     pub content_heights: [usize; 5],
@@ -82,6 +90,7 @@ pub struct App {
     pub reveal: bool,
     load_error: bool,
     pending_g: bool,
+    filter_selection: Option<CardKey>,
 }
 
 impl App {
@@ -90,7 +99,7 @@ impl App {
     }
 
     pub fn new_at(board: Board, now: i64) -> Self {
-        let lanes = view::build(&board);
+        let lanes = view::build(&board, now, Filter::All, "", Sort::Attention);
         let mut app = Self {
             board,
             lanes,
@@ -114,7 +123,7 @@ impl App {
         let previous = self.cursor;
         let lane = self.cursor.lane;
         let card = self.cursor.card;
-        self.lanes = view::build(&board);
+        self.lanes = view::build(&board, now, self.filter, &self.query, self.sort);
         self.board = board;
         self.now = now;
         self.loaded_at = now;
@@ -142,6 +151,89 @@ impl App {
 
     pub fn has_load_error(&self) -> bool {
         self.load_error
+    }
+
+    pub fn has_filter(&self) -> bool {
+        self.filter != Filter::All || !self.query.trim().is_empty()
+    }
+
+    fn start_filter_input(&mut self) {
+        self.pending_g = false;
+        self.mode = Mode::Filter {
+            text: self.query.clone(),
+            before_query: self.query.clone(),
+            before_selection: self.selected_key(),
+        };
+    }
+
+    fn set_query(&mut self, text: String) {
+        let was_filtered = self.has_filter();
+        self.query = text;
+        if !was_filtered && self.has_filter() {
+            self.filter_selection = self.selected_key();
+        }
+        if !self.has_filter() {
+            self.filter_selection = None;
+        }
+        self.rebuild_lanes();
+    }
+
+    fn cycle_filter(&mut self) {
+        let was_filtered = self.has_filter();
+        self.filter = self.filter.next();
+        if !was_filtered && self.has_filter() {
+            self.filter_selection = self.selected_key();
+        }
+        if !self.has_filter() {
+            self.filter_selection = None;
+        }
+        self.rebuild_lanes();
+        self.set_status(format!("filter: {}", self.filter.label()));
+        self.reveal = true;
+    }
+
+    fn cycle_sort(&mut self) {
+        self.sort = self.sort.next();
+        self.rebuild_lanes();
+        self.set_status(format!("sort: {}", self.sort.label()));
+        self.reveal = true;
+    }
+
+    fn clear_filter(&mut self) {
+        self.filter = Filter::All;
+        self.query.clear();
+        self.rebuild_lanes();
+        if let Some(key) = self.filter_selection.take() {
+            self.restore_key(Some(key));
+        }
+        self.set_status("filter cleared");
+    }
+
+    fn rebuild_lanes(&mut self) {
+        let key = self.selected_key();
+        let child = self.selected_child_name();
+        let previous = self.cursor;
+        self.lanes = view::build(&self.board, self.now, self.filter, &self.query, self.sort);
+        let found = self.restore_selection(key, child, previous.lane, previous.card);
+        if !self.selection_is_expanded() {
+            self.cursor.child = None;
+        }
+        self.reveal = !found || self.cursor != previous;
+    }
+
+    fn restore_key(&mut self, key: Option<CardKey>) {
+        if let Some(key) = key {
+            if let Some((lane, card)) = self.find_key(&key) {
+                self.cursor = Cursor {
+                    lane,
+                    card,
+                    child: None,
+                };
+                self.reveal = true;
+                return;
+            }
+        }
+        self.clamp();
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
@@ -231,8 +323,22 @@ impl App {
                 self.reveal = true;
                 None
             }
+            KeyCode::Char('/') => {
+                self.start_filter_input();
+                None
+            }
+            KeyCode::Char('f') => {
+                self.cycle_filter();
+                None
+            }
+            KeyCode::Char('o') => {
+                self.cycle_sort();
+                None
+            }
             KeyCode::Esc => {
-                if self.detail {
+                if self.has_filter() {
+                    self.clear_filter();
+                } else if self.detail {
                     self.detail = false;
                     self.reveal = true;
                 }
@@ -336,6 +442,57 @@ impl App {
                     None
                 }
                 _ => None,
+            },
+            Mode::Filter {
+                mut text,
+                before_query,
+                before_selection,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.query = before_query;
+                    if self.query.is_empty() && self.filter == Filter::All {
+                        self.filter_selection = None;
+                    }
+                    self.rebuild_lanes();
+                    self.restore_key(before_selection);
+                    None
+                }
+                KeyCode::Enter => {
+                    if self.query.trim().is_empty() {
+                        self.set_status("filter cleared");
+                    } else {
+                        self.set_status(format!("filter \"{}\"", self.query.trim()));
+                    }
+                    None
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                    self.set_query(text.clone());
+                    self.mode = Mode::Filter {
+                        text,
+                        before_query,
+                        before_selection,
+                    };
+                    None
+                }
+                KeyCode::Char(c) => {
+                    text.push(c);
+                    self.set_query(text.clone());
+                    self.mode = Mode::Filter {
+                        text,
+                        before_query,
+                        before_selection,
+                    };
+                    None
+                }
+                _ => {
+                    self.mode = Mode::Filter {
+                        text,
+                        before_query,
+                        before_selection,
+                    };
+                    None
+                }
             },
             Mode::TaskInput { mut text } => match key.code {
                 KeyCode::Esc => None,
@@ -668,13 +825,50 @@ impl App {
                 return true;
             }
         }
+        self.select_nearest(lane, card);
+        false
+    }
+
+    fn select_nearest(&mut self, lane: usize, card: usize) {
+        if self.lanes.is_empty() {
+            self.cursor = Cursor::default();
+            return;
+        }
+        let lane = lane.min(self.lanes.len() - 1);
+        if !self.lanes[lane].cards.is_empty() {
+            self.cursor = Cursor {
+                lane,
+                card: card.min(self.lanes[lane].cards.len() - 1),
+                child: None,
+            };
+            return;
+        }
+        for distance in 1..self.lanes.len() {
+            if let Some(left) = lane.checked_sub(distance) {
+                if !self.lanes[left].cards.is_empty() {
+                    self.cursor = Cursor {
+                        lane: left,
+                        card: 0,
+                        child: None,
+                    };
+                    return;
+                }
+            }
+            let right = lane + distance;
+            if right < self.lanes.len() && !self.lanes[right].cards.is_empty() {
+                self.cursor = Cursor {
+                    lane: right,
+                    card: 0,
+                    child: None,
+                };
+                return;
+            }
+        }
         self.cursor = Cursor {
             lane,
-            card,
+            card: 0,
             child: None,
         };
-        self.clamp();
-        false
     }
 
     fn clamp(&mut self) {
@@ -1018,6 +1212,64 @@ mod tests {
         assert_eq!(app.help_scroll, 1);
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn filter_preset_and_clear_restore_the_selection() {
+        let mut app = App::new_at(board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("active"));
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.filter, Filter::Attention);
+        assert_eq!(app.lanes[app.cursor.lane].lane, Lane::Blocked);
+        assert!(app.selected_task().unwrap().title.contains("Blocked"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.filter, Filter::All);
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn filter_query_applies_live_and_esc_clears() {
+        let mut app = App::new_at(board(), NOW);
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("backlog"));
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "active".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.query, "active");
+        assert_eq!(app.selected_task().unwrap().title, "Active task");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.filter, Filter::All);
+        assert!(app.query.is_empty());
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("backlog"));
+    }
+
+    #[test]
+    fn filter_input_escape_cancels_the_query() {
+        let mut app = App::new_at(board(), NOW);
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "active".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(app.query, "active");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.query.is_empty());
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("backlog"));
+    }
+
+    #[test]
+    fn sort_key_cycles_presentation_order() {
+        let mut app = App::new_at(board(), NOW);
+        assert_eq!(app.sort, Sort::Attention);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.sort, Sort::Title);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.sort, Sort::Updated);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.sort, Sort::Attention);
     }
 
     #[test]
