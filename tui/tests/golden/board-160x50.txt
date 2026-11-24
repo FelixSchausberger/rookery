@@ -1,0 +1,50 @@
+rookery board   6 cards   6 workspaces
+Backlog 1 · 0ws                 Active 2 · 3ws                  Review 1 · 1ws                   Blocked 1 · 1ws                 To Clean 1 · 1ws
+╭─────────────────────────────╮ ╭─────────────────────────────╮ ╭──────────────────────────────╮ ╭─────────────────────────────╮ ╭─────────────────────────────╮
+│Plan the next release        │ │Fix the board cache         2│ │Polish the cards             1│ │Wait for the design review  1│ │Clean the old seat          1│
+│#plan · updated 2d           │ │#cache · updated 2h          │ │#polish · updated 30m         │ │#design · updated 3d         │ │#old · updated 2h            │
+│press s to start a seat      │ │1 unpushed · 1 merged        │ │1 merged                      │ │1 empty · waiting 3d         │ │1 unpushed · clean 2h        │
+╰─────────────────────────────╯ │1 live                       │ │session "Board polish"        │ │wait: design review          │ │sweep keeps unpushed         │
+                                ╰─────────────────────────────╯ │▸ ws-polish merged 1h         │ ╰─────────────────────────────╯ ╰─────────────────────────────╯
+                                ╭─────────────────────────────╮ ╰──────────────────────────────╯
+                                │Loose experiment             │
+                                │updated 1h                   │
+                                │1 unpushed                   │
+                                ╰─────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit

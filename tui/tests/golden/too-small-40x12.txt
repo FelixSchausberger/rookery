@@ -1,0 +1,12 @@
+
+
+
+
+   ┌rookery board───────────────────┐
+   │       Terminal too small       │
+   │       need at least 50x12      │
+   └────────────────────────────────┘
+
+
+
+
