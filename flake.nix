@@ -70,7 +70,8 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = ["--package" "rookery-cli" "--bin" "rookery"];
           cargoTestFlags = ["--package" "rookery-core" "--package" "rookery-cli"];
-          nativeBuildInputs = [pkgs.makeWrapper];
+          buildInputs = [pkgs.sqlite];
+          nativeBuildInputs = [pkgs.makeWrapper pkgs.pkg-config];
           postInstall = ''
             wrapProgram $out/bin/rookery --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
             ln -s rookery $out/bin/ocws
@@ -89,7 +90,8 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = ["--package" "rookery-tui" "--bin" "rookery-tui"];
           cargoTestFlags = ["--package" "rookery-tui"];
-          nativeBuildInputs = [pkgs.makeWrapper];
+          buildInputs = [pkgs.sqlite];
+          nativeBuildInputs = [pkgs.makeWrapper pkgs.pkg-config];
           postInstall = ''
             wrapProgram $out/bin/rookery-tui --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
           '';
