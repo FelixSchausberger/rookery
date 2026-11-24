@@ -16,6 +16,88 @@ pub enum CardKey {
     Workspace(String),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Filter {
+    #[default]
+    All,
+    Attention,
+    Live,
+    Unpushed,
+    Reclaimable,
+}
+
+impl Filter {
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Attention,
+            Self::Attention => Self::Live,
+            Self::Live => Self::Unpushed,
+            Self::Unpushed => Self::Reclaimable,
+            Self::Reclaimable => Self::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Attention => "attention",
+            Self::Live => "live",
+            Self::Unpushed => "unpushed",
+            Self::Reclaimable => "reclaimable",
+        }
+    }
+
+    pub fn matches(self, card: &Card) -> bool {
+        match self {
+            Self::All => true,
+            Self::Attention => card
+                .workspaces()
+                .iter()
+                .any(|workspace| workspace.wait.is_some() || workspace.state == State::Conflict),
+            Self::Live => card
+                .workspaces()
+                .iter()
+                .any(|workspace| workspace.hold == Hold::Live),
+            Self::Unpushed => card
+                .workspaces()
+                .iter()
+                .any(|workspace| workspace.state == State::Unpushed),
+            Self::Reclaimable => card.workspaces().iter().any(|workspace| {
+                workspace.clean.is_some()
+                    || (workspace.hold == Hold::Idle
+                        && workspace.wait.is_none()
+                        && matches!(workspace.state, State::Empty | State::Merged))
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    #[default]
+    Attention,
+    Title,
+    Updated,
+}
+
+impl Sort {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Attention => Self::Title,
+            Self::Title => Self::Updated,
+            Self::Updated => Self::Attention,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Attention => "attention",
+            Self::Title => "title",
+            Self::Updated => "updated",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Card {
     pub key: CardKey,
@@ -31,7 +113,7 @@ pub struct LaneModel {
 
 /// Build the five lanes in their presentation order. The core's `lanes()` is
 /// the input; the order here is the board's, never the core's.
-pub fn build(board: &Board) -> Vec<LaneModel> {
+pub fn build(board: &Board, now: i64, filter: Filter, query: &str, sort: Sort) -> Vec<LaneModel> {
     let tasks: HashMap<&str, &Task> = board
         .tasks
         .iter()
@@ -45,14 +127,52 @@ pub fn build(board: &Board) -> Vec<LaneModel> {
                 .tasks
                 .into_iter()
                 .map(|view| Card::new(view, &tasks))
+                .filter(|card| filter.matches(card) && matches_query(card, query))
                 .collect();
-            sort_cards(&mut cards);
+            sort_cards(&mut cards, sort, now);
             LaneModel {
                 lane: lane.lane,
                 cards,
             }
         })
         .collect()
+}
+
+/// Match a card's title, id, notes, workspace names, descriptions, or session
+/// titles. The query is case-insensitive; a leading '#' is ignored.
+pub fn matches_query(card: &Card, query: &str) -> bool {
+    let query = query.trim().trim_start_matches('#').to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    if card.title().to_lowercase().contains(&query) {
+        return true;
+    }
+    if card
+        .id()
+        .map(|id| id.to_lowercase().contains(&query))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if card
+        .task
+        .as_ref()
+        .map(|task| task.notes.to_lowercase().contains(&query))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    card.workspaces().iter().any(|workspace| {
+        workspace.workspace.to_lowercase().contains(&query)
+            || workspace.description.to_lowercase().contains(&query)
+            || workspace
+                .session
+                .as_ref()
+                .and_then(|session| session.title.as_deref())
+                .map(|title| title.to_lowercase().contains(&query))
+                .unwrap_or(false)
+    })
 }
 
 impl Card {
@@ -454,10 +574,17 @@ fn child_lines(
     }
 }
 
-fn sort_cards(cards: &mut [Card]) {
+fn sort_cards(cards: &mut [Card], sort: Sort, now: i64) {
     cards.sort_by(|a, b| {
-        attention_key(a)
-            .cmp(&attention_key(b))
+        let order = match sort {
+            Sort::Attention => attention_key(a).cmp(&attention_key(b)),
+            Sort::Title => std::cmp::Ordering::Equal,
+            Sort::Updated => b
+                .activity_time(now)
+                .unwrap_or(0)
+                .cmp(&a.activity_time(now).unwrap_or(0)),
+        };
+        order
             .then_with(|| a.title().to_lowercase().cmp(&b.title().to_lowercase()))
             .then_with(|| a.title().cmp(b.title()))
             .then_with(|| a.key.cmp(&b.key))
@@ -843,7 +970,7 @@ mod tests {
             days: 3,
         });
         cards.push(card("waiting", "Waiting", vec![waiting]));
-        sort_cards(&mut cards);
+        sort_cards(&mut cards, Sort::Attention, 10_000);
         let order: Vec<&str> = cards.iter().filter_map(|card| card.id()).collect();
         assert_eq!(
             order,
@@ -897,5 +1024,166 @@ mod tests {
         });
         assert_eq!(card.activity_time(10_000), Some(9_000));
         assert_eq!(card.activity_age(10_000), Some(1_000));
+    }
+
+    #[test]
+    fn filters_match_presets_and_query() {
+        let mut waiting_ws = workspace("ws-wait", State::Empty, Hold::Idle);
+        waiting_ws.wait = Some(Wait {
+            reason: "review".into(),
+            age: 3 * 86_400,
+            days: 3,
+        });
+        let waiting = card("wait", "Wait", vec![waiting_ws]);
+        let conflict = card(
+            "conflict",
+            "Conflict",
+            vec![workspace("ws-conflict", State::Conflict, Hold::Idle)],
+        );
+        let live = card(
+            "live",
+            "Live",
+            vec![workspace("ws-live", State::Empty, Hold::Live)],
+        );
+        let unpushed = card(
+            "unpushed",
+            "Unpushed",
+            vec![workspace("ws-unpushed", State::Unpushed, Hold::Idle)],
+        );
+        let mut clean_ws = workspace("ws-clean", State::Merged, Hold::Idle);
+        clean_ws.clean = Some(Clean { age: 1_000 });
+        let clean = card("clean", "Clean", vec![clean_ws]);
+        let stale = card(
+            "stale",
+            "Stale",
+            vec![workspace("ws-stale", State::Merged, Hold::Idle)],
+        );
+
+        assert!(Filter::All.matches(&waiting));
+        assert!(Filter::Attention.matches(&waiting));
+        assert!(Filter::Attention.matches(&conflict));
+        assert!(!Filter::Live.matches(&waiting));
+        assert!(Filter::Live.matches(&live));
+        assert!(Filter::Unpushed.matches(&unpushed));
+        assert!(Filter::Reclaimable.matches(&clean));
+        assert!(Filter::Reclaimable.matches(&stale));
+        assert!(!Filter::Reclaimable.matches(&unpushed));
+
+        let mut ws = workspace("ws-cache-fix", State::Unpushed, Hold::Idle);
+        ws.description = "fix the cache".into();
+        ws.session = Some(crate::model::Session {
+            title: Some("Board polish".into()),
+            updated: Some(9_000),
+        });
+        let mut searchable = card("cache", "Fix the board cache", vec![ws]);
+        searchable.task = Some(Task {
+            id: "cache".into(),
+            title: "Fix the board cache".into(),
+            status: "open".into(),
+            notes: "design review".into(),
+            ..Task::default()
+        });
+        assert!(matches_query(&searchable, "cache"));
+        assert!(matches_query(&searchable, "#cache"));
+        assert!(matches_query(&searchable, "BOARD"));
+        assert!(matches_query(&searchable, "ws-cache-fix"));
+        assert!(matches_query(&searchable, "polish"));
+        assert!(matches_query(&searchable, "design"));
+        assert!(!matches_query(&searchable, "nope"));
+        assert!(matches_query(&searchable, ""));
+    }
+
+    #[test]
+    fn sort_title_and_updated_are_presentation_order() {
+        let mut alpha = card(
+            "alpha",
+            "Alpha",
+            vec![workspace("a", State::Merged, Hold::Idle)],
+        );
+        alpha.task = Some(Task {
+            id: "alpha".into(),
+            title: "Alpha".into(),
+            status: "open".into(),
+            updated: 2_000,
+            ..Task::default()
+        });
+        let mut beta = card(
+            "beta",
+            "Beta",
+            vec![workspace("b", State::Merged, Hold::Idle)],
+        );
+        beta.task = Some(Task {
+            id: "beta".into(),
+            title: "Beta".into(),
+            status: "open".into(),
+            updated: 1_000,
+            ..Task::default()
+        });
+        let mut cards = vec![beta, alpha];
+        sort_cards(&mut cards, Sort::Title, 10_000);
+        let order: Vec<&str> = cards.iter().filter_map(|card| card.id()).collect();
+        assert_eq!(order, vec!["alpha", "beta"]);
+        sort_cards(&mut cards, Sort::Updated, 10_000);
+        let order: Vec<&str> = cards.iter().filter_map(|card| card.id()).collect();
+        assert_eq!(order, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn build_filters_cards_before_sorting() {
+        let mut waiting_ws = workspace("ws-wait", State::Empty, Hold::Idle);
+        waiting_ws.task = Some("wait".into());
+        waiting_ws.wait = Some(Wait {
+            reason: "review".into(),
+            age: 3_600,
+            days: 0,
+        });
+        let mut live_ws = workspace("ws-live", State::Empty, Hold::Live);
+        live_ws.task = Some("live".into());
+        let board = Board {
+            workspaces: vec![waiting_ws, live_ws],
+            tasks: vec![
+                Task {
+                    id: "wait".into(),
+                    title: "Wait".into(),
+                    status: "open".into(),
+                    workspaces: vec!["ws-wait".into()],
+                    ..Task::default()
+                },
+                Task {
+                    id: "live".into(),
+                    title: "Live".into(),
+                    status: "open".into(),
+                    workspaces: vec!["ws-live".into()],
+                    ..Task::default()
+                },
+            ],
+        };
+        let lanes = build(&board, 10_000, Filter::Attention, "", Sort::Attention);
+        let cards: usize = lanes.iter().map(|lane| lane.cards.len()).sum();
+        assert_eq!(cards, 1);
+        let blocked = lanes
+            .iter()
+            .find(|lane| lane.lane == Lane::Blocked)
+            .unwrap();
+        assert_eq!(blocked.cards[0].id(), Some("wait"));
+
+        let lanes = build(&board, 10_000, Filter::All, "live", Sort::Title);
+        let cards: usize = lanes.iter().map(|lane| lane.cards.len()).sum();
+        assert_eq!(cards, 1);
+        assert!(
+            lanes
+                .iter()
+                .any(|lane| lane.cards.iter().any(|card| card.id() == Some("live")))
+        );
+    }
+
+    #[test]
+    fn presets_and_sorts_cycle() {
+        assert_eq!(Filter::All.next(), Filter::Attention);
+        assert_eq!(Filter::Reclaimable.next(), Filter::All);
+        assert_eq!(Filter::Attention.label(), "attention");
+        assert_eq!(Sort::Attention.next(), Sort::Title);
+        assert_eq!(Sort::Updated.next(), Sort::Attention);
+        assert_eq!(Sort::Title.label(), "title");
     }
 }

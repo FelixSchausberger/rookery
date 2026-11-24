@@ -12,6 +12,8 @@ Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Bloc
                         │1 u│  n       create a backlog task                               │
                         ╰───│  s       start a seat for the task                           │
                             │  a       assign the selected ungrouped workspace             │
+                            │  /       filter cards                                        │
+                            │  f       cycle filter presets                                │
                             │  space   expand or collapse the selected card                │
                             │  j k     move within a lane                                  │
                             │  h l     move between lanes                                  │
@@ -23,12 +25,10 @@ Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Bloc
                             │  ctrl-u  half page up                                        │
                             │  pgdn    page down                                           │
                             │  pgup    page up                                             │
+                            │  o       cycle sort                                          │
                             │  i       toggle the detail pane                              │
                             │  r       refresh now                                         │
                             │  ?       close this help                                     │
-                            │  esc     close the detail pane                               │
-                            │  q       quit                                                │
-                            │  tasks group workspaces; lanes are derived, never stored     │
                             └──────────────────────────────────────────────────────────────┘
 
 

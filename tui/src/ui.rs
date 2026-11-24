@@ -1,7 +1,7 @@
 // Rendering only: the derived lanes as cards, the header summary, the focused
 // lane and its bar on narrow terminals, the detail pane, and the modals.
 use crate::app::{App, Mode};
-use crate::model::{Hold, Lane, State, Workspace};
+use crate::model::{Board, Hold, Lane, State, Workspace};
 use crate::view::{relative_age, truncate, wrap};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -74,6 +74,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 workspace,
                 selected,
             } => render_assign(frame, area, app, workspace, *selected),
+            Mode::Filter { text, .. } => render_filter(frame, area, text),
             Mode::Normal | Mode::Help => {}
         }
     }
@@ -120,6 +121,14 @@ fn summary(app: &App) -> Summary {
     summary
 }
 
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 fn refresh_age(app: &App) -> String {
     let seconds = (app.clock - app.loaded_at).max(0);
     if seconds < 60 {
@@ -143,13 +152,15 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
     }
     let summary = summary(app);
     let age = refresh_age(app);
-    let workspaces = if area.width >= 60 { "workspaces" } else { "ws" };
+    let cards = plural(summary.cards, "card");
+    let workspaces = if area.width >= 60 {
+        plural(summary.workspaces, "workspace")
+    } else {
+        format!("{} ws", summary.workspaces)
+    };
     let mut spans = vec![
         Span::styled("rookery board", title_style()),
-        Span::raw(format!(
-            "  {} cards  {} {workspaces}",
-            summary.cards, summary.workspaces
-        )),
+        Span::raw(format!("  {cards}  {workspaces}")),
     ];
     if area.width >= 110 {
         spans.push(Span::styled(
@@ -213,7 +224,11 @@ fn lane_meaning(lane: Lane) -> &'static str {
 
 fn render_lanes(frame: &mut Frame, area: Rect, app: &mut App, wide_terminal: bool) {
     if app.lanes.iter().all(|lane| lane.cards.is_empty()) {
-        render_empty(frame, area);
+        if app.has_filter() && board_has_cards(&app.board) {
+            render_no_match(frame, area, app);
+        } else {
+            render_empty(frame, area);
+        }
         return;
     }
     if wide_terminal {
@@ -230,12 +245,40 @@ fn render_lanes(frame: &mut Frame, area: Rect, app: &mut App, wide_terminal: boo
     }
 }
 
+fn board_has_cards(board: &Board) -> bool {
+    board.lanes().iter().any(|lane| !lane.tasks.is_empty())
+}
+
 fn render_empty(frame: &mut Frame, area: Rect) {
-    let lines = vec![
-        Line::from("No tasks yet.").alignment(Alignment::Center),
-        Line::from("Press n to create one.").alignment(Alignment::Center),
-    ];
-    let height = 2.min(area.height);
+    render_message(
+        frame,
+        area,
+        vec![
+            Line::from("No tasks yet.").alignment(Alignment::Center),
+            Line::from("Press n to create one.").alignment(Alignment::Center),
+        ],
+    );
+}
+
+fn render_no_match(frame: &mut Frame, area: Rect, app: &App) {
+    let label = if app.query.trim().is_empty() {
+        app.filter.label().to_string()
+    } else {
+        app.query.trim().to_string()
+    };
+    render_message(
+        frame,
+        area,
+        vec![
+            Line::from(format!("No tasks match \"{}\"", truncate(&label, 24)))
+                .alignment(Alignment::Center),
+            Line::from("esc clears the filter").alignment(Alignment::Center),
+        ],
+    );
+}
+
+fn render_message(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
+    let height = (lines.len() as u16).min(area.height);
     let y = area.y + area.height.saturating_sub(height) / 2;
     frame.render_widget(
         Paragraph::new(lines),
@@ -373,6 +416,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, detail_allowed: bool)
         Mode::TaskInput { .. } | Mode::Assign { .. } => {
             ("enter confirm   esc cancel".to_string(), dim_style())
         }
+        Mode::Filter { .. } => ("enter keep   esc cancel".to_string(), dim_style()),
         Mode::Normal => {
             if app.has_load_error() {
                 ("r retry".to_string(), Style::default().fg(Color::Red))
@@ -575,6 +619,8 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  n       create a backlog task"),
         Line::raw("  s       start a seat for the task"),
         Line::raw("  a       assign the selected ungrouped workspace"),
+        Line::raw("  /       filter cards"),
+        Line::raw("  f       cycle filter presets"),
         Line::raw("  space   expand or collapse the selected card"),
         Line::raw("  j k     move within a lane"),
         Line::raw("  h l     move between lanes"),
@@ -586,16 +632,30 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  ctrl-u  half page up"),
         Line::raw("  pgdn    page down"),
         Line::raw("  pgup    page up"),
+        Line::raw("  o       cycle sort"),
         Line::raw("  i       toggle the detail pane"),
         Line::raw("  r       refresh now"),
         Line::raw("  ?       close this help"),
-        Line::raw("  esc     close the detail pane"),
+        Line::raw("  esc     clear filter or close detail"),
         Line::raw("  q       quit"),
         Line::styled(
             "  tasks group workspaces; lanes are derived, never stored",
             dim_style(),
         ),
     ]
+}
+
+fn render_filter(frame: &mut Frame, area: Rect, text: &str) {
+    let rect = centered_rect(60, 3, area);
+    frame.render_widget(Clear, rect);
+    let line = Line::from(vec![
+        Span::raw(text.to_string()),
+        Span::styled("▏", dim_style()),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line).block(Block::default().borders(Borders::ALL).title("filter")),
+        rect,
+    );
 }
 
 fn render_input(frame: &mut Frame, area: Rect, text: &str) {
@@ -955,8 +1015,46 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         let text = render_text(&mut app, 100, 24);
         assert!(text.contains("open the selected conversation's seat"));
-        assert!(text.contains("lanes are derived, never stored"));
+        assert!(text.contains("filter cards"));
         assert!(text.contains("expand or collapse the selected card"));
+        press(&mut app, KeyCode::PageDown);
+        let bottom = render_text(&mut app, 100, 24);
+        assert!(bottom.contains("lanes are derived, never stored"));
+    }
+
+    #[test]
+    fn no_match_names_the_filter() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "zzz".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        let text = render_text(&mut app, 120, 40);
+        assert!(text.contains("No tasks match \"zzz\""));
+        assert!(text.contains("esc clears the filter"));
+    }
+
+    #[test]
+    fn golden_120x40_filter() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "cache".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_golden("board-120x40-filter.txt", &mut app, 120, 40);
+    }
+
+    #[test]
+    fn golden_120x40_no_match() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "zzz".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_golden("board-120x40-no-match.txt", &mut app, 120, 40);
     }
 
     #[test]
