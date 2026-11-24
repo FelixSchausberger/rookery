@@ -677,7 +677,7 @@ checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "rookery-cli"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "clap",
  "rookery-core",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "rayon",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "rookery-tui"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "crossterm",
  "ratatui",

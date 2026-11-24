@@ -137,23 +137,43 @@ lookup stays inside the command.
 
 ## Board TUI
 
-`rookery-tui` is the one board: tasks grouped into derived lanes, with the
-selected task's conversations expanded underneath it.
+`rookery-tui` is the one board: tasks and standalone workspaces as cards in
+five derived lanes. A card carries the title, task id, workspace count,
+aggregate state, session, wait/clean markers and age; the selected card
+expands in place with one row per workspace.
 
 - Backlog: no workspaces. Active: a live or unpushed workspace. Review: every
   workspace is merged, empty, or in flight. Blocked: a conflict or a wait
   marker. To Clean: every workspace is marked. Archived tasks are hidden.
-- Keys: `enter` opens the seat, `d` marks the task (or this workspace) for
-  cleanup, `n` creates a backlog task, `s` starts a seat for the task, `a`
-  assigns an ungrouped workspace, `h/j/k/l` move, `r` refreshes, `?` opens the
-  key help, and `q` quits.
+- At 110 columns and wider the five lanes share the width. Below that one lane
+  is focused and a lane bar keeps all five counts visible; cards are compact
+  below 70 columns. The header counts live, session, wait, conflict and stale
+  workspaces and the time since the last successful refresh.
+- Keys: `h`/`l` and `Tab`/`Shift-Tab` switch lanes, `1`-`5` jump to a lane,
+  `j`/`k` move between cards, `Space` expands or collapses a card, `Enter`
+  opens the selected task or workspace seat, `d` marks the task or workspace
+  for cleanup, `s` starts a seat for the task, `n` creates a backlog task, `a`
+  assigns an ungrouped workspace, `gg`/`G` jump to the first or last card,
+  `Ctrl-d`/`Ctrl-u` scroll half a page, `PgDn`/`PgUp` scroll a page, `i` toggles
+  the detail pane, `/` filters live, `f` cycles the filter presets, `o` cycles
+  the sort, `r` refreshes, `?` opens the key help, `Esc` clears the filter or
+  closes the detail pane, and `q` quits.
+- The detail pane shows the selected task's notes and timestamps and each
+  workspace's state, hold, session, wait, clean marker and path. It is a right
+  pane at 140 columns, a bottom pane at 70x24, and a footer hint when neither
+  fits.
+- `/` matches titles, ids, notes, workspace names, descriptions and session
+  titles. `f` cycles all, attention, live, unpushed and reclaimable; `o`
+  cycles attention, title and updated. `Esc` restores the selection from before
+  the filter. A no-match board says what was filtered.
+- `NO_COLOR` keeps the layout and selection without foreground colors.
 - It uses `rookery-core` in process: the same board read model and the same
   actions as the CLI. It never reads the task store, the jj store, or the base
   itself, and it never calls herdr or jj directly.
 - The CLI's `ls --json` and `task list --json` remain the public NDJSON
   contract for other clients.
-- The board refreshes every two seconds and after every action. A failed call
-  keeps the last board and reports the error on the status line.
+- The board refreshes every two seconds and after every action. A failed load
+  keeps the last board, shows `! <error>` in the header, and `r` retries.
 
 Install it with `programs.rookery.tui.enable = true`, or build it with
 `nix build .#rookery-tui`. The client is terminal-agnostic; a herdr popup, a
