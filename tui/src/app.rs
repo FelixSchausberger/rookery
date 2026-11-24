@@ -1,7 +1,7 @@
 // Board state and key handling. The TUI owns only a cached view: every write
 // becomes an Action whose argv the runtime hands to the CLI.
 use crate::model::{Board, TaskView, Workspace};
-use crate::view::{self, CardKey, Filter, LaneModel, Sort};
+use crate::view::{self, CardKey, Filter, LaneModel, Palette, Sort};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rookery_core::util::now_secs;
 
@@ -83,6 +83,7 @@ pub struct App {
     pub filter: Filter,
     pub query: String,
     pub sort: Sort,
+    pub palette: Palette,
     pub scroll: [ScrollState; 5],
     pub viewports: [usize; 5],
     pub content_heights: [usize; 5],
@@ -95,7 +96,9 @@ pub struct App {
 
 impl App {
     pub fn new(board: Board) -> Self {
-        Self::new_at(board, now_secs())
+        let mut app = Self::new_at(board, now_secs());
+        app.palette = Palette::from_env();
+        app
     }
 
     pub fn new_at(board: Board, now: i64) -> Self {

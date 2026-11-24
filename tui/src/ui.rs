@@ -144,7 +144,7 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(
             Paragraph::new(Line::styled(
                 text,
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                app.palette.error().add_modifier(Modifier::BOLD),
             )),
             area,
         );
@@ -346,7 +346,7 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide:
         let scroll_area = Rect::new(body.right(), body.y, 1, body.height);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(app.palette.fg(Color::DarkGray)),
             scroll_area,
             &mut state,
         );
@@ -380,9 +380,23 @@ fn lane_lines(
         let child = if selected { app.cursor.child } else { None };
         let start = lines.len();
         let card_lines = if wide {
-            card.lines(width as usize, selected, expanded, child, app.now)
+            card.lines(
+                width as usize,
+                selected,
+                expanded,
+                child,
+                app.now,
+                app.palette,
+            )
         } else {
-            card.compact_lines(width as usize, selected, expanded, child, app.now)
+            card.compact_lines(
+                width as usize,
+                selected,
+                expanded,
+                child,
+                app.now,
+                app.palette,
+            )
         };
         lines.extend(card_lines);
         if selected {
@@ -419,10 +433,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, detail_allowed: bool)
         Mode::Filter { .. } => ("enter keep   esc cancel".to_string(), dim_style()),
         Mode::Normal => {
             if app.has_load_error() {
-                ("r retry".to_string(), Style::default().fg(Color::Red))
+                ("r retry".to_string(), app.palette.error())
             } else if !app.status.is_empty() {
                 if app.error {
-                    (format!("! {}", app.status), Style::default().fg(Color::Red))
+                    (format!("! {}", app.status), app.palette.error())
                 } else {
                     (app.status.clone(), Style::default())
                 }
@@ -751,9 +765,11 @@ fn dim_style() -> Style {
 mod tests {
     use crate::app::App;
     use crate::model::{Board, Clean, Hold, Session, State, Task, Wait, Workspace};
+    use crate::view::Palette;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
     const NOW: i64 = 1_700_000_000;
 
@@ -918,6 +934,14 @@ mod tests {
     }
 
     #[test]
+    fn golden_100x30() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-100x30.txt", &mut app, 100, 30);
+    }
+
+    #[test]
     fn golden_120x40() {
         let mut app = App::new_at(golden_board(), NOW);
         press(&mut app, KeyCode::Char('l'));
@@ -932,6 +956,14 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char(' '));
         assert_golden("board-160x50.txt", &mut app, 160, 50);
+    }
+
+    #[test]
+    fn golden_200x60() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-200x60.txt", &mut app, 200, 60);
     }
 
     #[test]
@@ -1020,6 +1052,19 @@ mod tests {
         press(&mut app, KeyCode::PageDown);
         let bottom = render_text(&mut app, 100, 24);
         assert!(bottom.contains("lanes are derived, never stored"));
+    }
+
+    #[test]
+    fn no_color_keeps_the_layout_without_foreground_colors() {
+        let mut app = App::new_at(golden_board(), NOW);
+        app.palette = Palette::PLAIN;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(buffer.content().iter().all(|cell| cell.fg == Color::Reset));
     }
 
     #[test]

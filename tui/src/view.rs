@@ -98,6 +98,62 @@ impl Sort {
     }
 }
 
+/// The terminal's color policy. `NO_COLOR` keeps the layout, selection and
+/// modifiers but removes every foreground color.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub color: bool,
+}
+
+impl Palette {
+    pub const COLOR: Self = Self { color: true };
+    pub const PLAIN: Self = Self { color: false };
+
+    pub fn from_env() -> Self {
+        if std::env::var_os("NO_COLOR").is_some() {
+            Self::PLAIN
+        } else {
+            Self::COLOR
+        }
+    }
+
+    pub fn fg(self, color: Color) -> Style {
+        if self.color {
+            Style::default().fg(color)
+        } else {
+            Style::default()
+        }
+    }
+
+    pub fn border(self) -> Style {
+        self.fg(Color::DarkGray)
+    }
+
+    pub fn selected_border(self) -> Style {
+        let style = self.fg(Color::Cyan);
+        if self.color {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+
+    pub fn error(self) -> Style {
+        let style = self.fg(Color::Red);
+        if self.color {
+            style
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::COLOR
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Card {
     pub key: CardKey,
@@ -370,16 +426,17 @@ impl Card {
         expanded: bool,
         child: Option<usize>,
         now: i64,
+        palette: Palette,
     ) -> Vec<Line<'static>> {
         if width < 4 {
             return Vec::new();
         }
         let inner = width - 2;
-        let accent = accent_style(self, selected);
+        let accent = accent_style(self, selected, palette);
         let border = if selected {
-            selected_border()
+            palette.selected_border()
         } else {
-            base_border()
+            palette.border()
         };
         let content = self.content_lines(inner, expanded, child, now);
         let mut lines = Vec::with_capacity(content.len() + 2);
@@ -402,11 +459,12 @@ impl Card {
         expanded: bool,
         child: Option<usize>,
         _now: i64,
+        palette: Palette,
     ) -> Vec<Line<'static>> {
         if width == 0 {
             return Vec::new();
         }
-        let accent = accent_style(self, selected);
+        let accent = accent_style(self, selected, palette);
         let available = width.saturating_sub(2);
         let title = if self.view.title.trim().is_empty() {
             "(untitled)"
@@ -673,8 +731,8 @@ fn accent_color(card: &Card) -> Color {
     }
 }
 
-fn accent_style(card: &Card, selected: bool) -> Style {
-    let mut style = Style::default().fg(accent_color(card));
+fn accent_style(card: &Card, selected: bool, palette: Palette) -> Style {
+    let mut style = palette.fg(accent_color(card));
     if selected {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -691,16 +749,6 @@ fn dim_style() -> Style {
 
 fn reverse_style() -> Style {
     Style::default().add_modifier(Modifier::REVERSED)
-}
-
-fn base_border() -> Style {
-    Style::default().fg(Color::DarkGray)
-}
-
-fn selected_border() -> Style {
-    Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD)
 }
 
 fn border_line(
