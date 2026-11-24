@@ -4,22 +4,25 @@ Repository guidance for AI agents working on `rookery`.
 
 ## Scope
 
-`rookery` is a jj workspace manager for coding agents. The core is a bash
-`writeShellApplication`; the Home Manager module wraps it. The current seat
-path targets herdr and OpenCode; the board is exposed as NDJSON through
-`ls --json` and `task list --json`, and `rookery-tui` renders it. The
-agent/terminal backend abstraction is planned, not present; do not introduce it
-while fixing the shell.
+`rookery` is a jj workspace manager for coding agents. The core is a Rust
+Cargo workspace (`core/`), and the CLI (`cli/`) and the board (`tui/`) are
+frontends over it. The CLI keeps the text and JSON consumer contract; the TUI
+links the core and renders its read model. The v0.4.0 bash implementation
+remains as `rookery-legacy` for one release as the parity oracle and rollback;
+it is frozen. The agent/terminal backend abstraction is planned, not present;
+do not introduce it beyond the `SeatBackend` and `SessionProvider` traits.
 
 ## Layout
 
-- `packages/rookery.nix`: the command, its runtime inputs, and the environment
-  contract (`ROOKERY_*`)
-- `nix/module.nix`: `programs.rookery` options (including `tui.enable`), the
-  configured wrapper, the GC service and timer
-- `tui/`: the board client, a standalone Rust crate with its own lock file
-- `tests/board.sh`: the classification and cache test
-- `tests/tasks.sh`: the task layer, cleanup and seat test
+- `core/`: rookery-core, the library: config, jj, tasks, lifecycle, seats,
+  the board read model and the derived lanes
+- `cli/`: the `rookery` binary (clap)
+- `tui/`: the board, a workspace member that depends on `rookery-core`
+- `packages/rookery.nix`: the v0.4.0 shell, shipped as `rookery-legacy`
+- `nix/module.nix`: `programs.rookery` options, the configured CLI and TUI
+  wrappers, and the GC service
+- `tests/board.sh`, `tests/tasks.sh`: behavioral tests for the shipping CLI
+- `tests/parity.sh`: the legacy shell and the Rust CLI on the same fixtures
 - `flake.nix`: packages, module export, checks, dev shell, formatting
 
 ## Rules
@@ -33,19 +36,21 @@ while fixing the shell.
   field names and their nullability, and the `tasks.json` document shape are
   consumer contracts. Change them only with a compatibility path and a test.
   The `ocws` command alias and the `OCWS_*` fallbacks are the v0.2.0 migration
-  path; do not remove them before v0.3.0.
-- The TUI consumes the CLI only: `ls --json`, `task list --json`, and the
-  write verbs. Never read the task store or the jj store from a client, and
-  never call herdr or jj from it. Lanes live in `tui/src/model.rs` and are
-  derived from the two streams.
-- Task writes go through `store_mutate`; read paths stay lock-free because the
+  path; keep them until the separate compatibility cleanup.
+- The CLI and TUI are two frontends over `rookery-core`. The TUI never reads
+  the task store or the jj store directly, and never calls herdr or jj; it
+  calls the core, which calls the backends. Lanes are derived in
+  `core/src/board.rs`.
+- Task writes go through `Store::mutate`; read paths stay lock-free because the
   document is replaced atomically. A clean marker is a request, not a stored
   lane.
-- The package bundles jj through `runtimeInputs`. Consumers that follow their
-  own nixpkgs get that nixpkgs's jj; do not assume the version in this flake is
-  the one at runtime.
+- The package wraps jj, rip, direnv and the other runtime inputs on PATH.
+  Consumers that follow their own nixpkgs get that nixpkgs's jj; do not assume
+  the version in this flake is the one at runtime.
 - Never rename or migrate a user's base directory, marker files, or workspace
   names in a mechanical change.
+- `rookery-legacy` is frozen: it exists for parity and rollback, not for
+  features or fixes.
 
 ## Validation
 
@@ -54,12 +59,11 @@ nix fmt
 nix flake check
 nix build .#rookery
 nix build .#rookery-tui
-bash tests/board.sh
-bash tests/tasks.sh
-cargo test --manifest-path tui/Cargo.toml
-cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
+nix build .#rookery-legacy
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-`nix flake check` builds `checks.rookery-board`, `checks.rookery-tasks`, and
-`checks.rookery-tui` (the crate's tests). CI runs all of the above on every push
-and pull request.
+`nix flake check` builds `checks.rookery-board`, `checks.rookery-tasks`,
+`checks.rookery-tui`, and `checks.rookery-parity` (the shell oracle against the
+Rust CLI). CI runs all of the above on every push and pull request.

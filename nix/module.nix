@@ -55,6 +55,17 @@ inputs: {
       makeWrapper ${cfg.package}/bin/rookery $out/bin/rookery ${lib.escapeShellArgs wrapperArgs}
       ln -s rookery $out/bin/ocws
     '';
+
+  # The board reads the same environment defaults as the CLI, and the pane a
+  # seat opens re-enters the configured CLI through ROOKERY_BIN.
+  finalTuiPackage =
+    pkgs.runCommand "rookery-tui-configured" {
+      nativeBuildInputs = [pkgs.makeWrapper];
+    } ''
+      mkdir -p $out/bin
+      makeWrapper ${cfg.tui.package}/bin/rookery-tui $out/bin/rookery-tui \
+        ${lib.escapeShellArgs (wrapperArgs ++ ["--set-default" "ROOKERY_BIN" "${finalPackage}/bin/rookery"])}
+    '';
 in {
   options.programs.rookery = {
     enable = lib.mkEnableOption "the Rookery jj workspace manager";
@@ -185,15 +196,25 @@ in {
         defaultText = lib.literalExpression "the rookery-tui package from this flake";
         description = "The board TUI binary to install.";
       };
+
+      finalPackage = lib.mkOption {
+        type = lib.types.package;
+        readOnly = true;
+        description = ''
+          The board wrapped with the module's environment defaults. A
+          keybinding or popup should run this, not `package`.
+        '';
+      };
     };
   };
 
   config = lib.mkIf cfg.enable {
     programs.rookery.finalPackage = finalPackage;
+    programs.rookery.tui.finalPackage = finalTuiPackage;
 
     home.packages =
       [cfg.finalPackage]
-      ++ lib.optional cfg.tui.enable cfg.tui.package;
+      ++ lib.optional cfg.tui.enable cfg.tui.finalPackage;
 
     assertions = [
       {

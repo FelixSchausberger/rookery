@@ -1,12 +1,12 @@
-// The Rookery board. Reads the CLI's JSON streams on a short timer, writes
-// only through the CLI, and never touches jj, the task store, or the base.
+// The Rookery board. Reads the core's board on a short timer, writes only
+// through the core, and never touches jj, herdr or the task store itself.
 mod app;
-mod cli;
+mod backend;
 mod model;
 mod ui;
 
 use app::{Action, App};
-use cli::Cli;
+use backend::{Backend, CoreBackend};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -16,6 +16,7 @@ use model::Board;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -23,9 +24,9 @@ use std::time::Duration;
 const REFRESH: Duration = Duration::from_secs(2);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::system();
+    let backend: Arc<dyn Backend> = Arc::new(CoreBackend);
     let mut app = App::new(Board::default());
-    match cli.load() {
+    match backend.load() {
         Ok(board) => app.set_board(board),
         Err(err) => app.set_load_error(err),
     }
@@ -34,10 +35,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let backend_terminal = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend_terminal)?;
 
-    let result = run(&mut terminal, &mut app, &cli);
+    let result = run(&mut terminal, &mut app, backend);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -49,10 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    cli: &Cli,
+    backend: Arc<dyn Backend>,
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
-    let loader = cli.clone();
+    let loader = Arc::clone(&backend);
     thread::spawn(move || {
         loop {
             thread::sleep(REFRESH);
@@ -86,12 +87,18 @@ fn run(
         };
         match action {
             Action::Quit => return Ok(()),
-            Action::Refresh => reload(app, cli),
+            Action::Refresh => reload(app, &backend),
             action => {
-                let Some(args) = action.args() else {
-                    continue;
+                let result = match &action {
+                    Action::Open(target) => backend.open(target),
+                    Action::MarkTask(task) => backend.mark_task(task),
+                    Action::MarkWorkspace(workspace) => backend.mark_workspace(workspace),
+                    Action::StartSeat(task) => backend.start_seat(task).map(|()| String::new()),
+                    Action::AddTask(title) => backend.add_task(title),
+                    Action::AssignTask { task, workspace } => backend.assign(task, workspace),
+                    Action::Quit | Action::Refresh => unreachable!(),
                 };
-                match cli.run(&args) {
+                match result {
                     Ok(out) => {
                         let label = action.label().unwrap_or_default();
                         let detail = out.lines().next().unwrap_or_default().trim();
@@ -100,7 +107,7 @@ fn run(
                         } else {
                             app.set_status(format!("{label} {detail}"));
                         }
-                        reload(app, cli);
+                        reload(app, &backend);
                     }
                     Err(err) => app.set_error(err),
                 }
@@ -109,8 +116,8 @@ fn run(
     }
 }
 
-fn reload(app: &mut App, cli: &Cli) {
-    match cli.load() {
+fn reload(app: &mut App, backend: &Arc<dyn Backend>) {
+    match backend.load() {
         Ok(board) => app.set_board(board),
         Err(err) => app.set_load_error(err),
     }

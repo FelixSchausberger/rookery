@@ -25,7 +25,11 @@ jobs:
         run: nix build .#rookery --print-build-logs
       - name: Build the TUI
         run: nix build .#rookery-tui --print-build-logs
+      - name: Build the legacy oracle
+        run: nix build .#rookery-legacy --print-build-logs
       - name: Formatting and shellcheck
         run: nix develop --command prek run --all-files
+      - name: Workspace tests
+        run: nix develop --command cargo test --workspace
       - name: Clippy
-        run: nix develop --command cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
