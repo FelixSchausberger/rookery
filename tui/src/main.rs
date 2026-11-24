@@ -4,6 +4,7 @@ mod app;
 mod backend;
 mod model;
 mod ui;
+mod view;
 
 use app::{Action, App};
 use backend::{Backend, CoreBackend};

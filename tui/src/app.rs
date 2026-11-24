@@ -1,7 +1,9 @@
 // Board state and key handling. The TUI owns only a cached view: every write
 // becomes an Action whose argv the runtime hands to the CLI.
-use crate::model::{Board, LaneView, TaskView, Workspace};
+use crate::model::{Board, TaskView, Workspace};
+use crate::view::{self, CardKey, LaneModel};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rookery_core::util::now_secs;
 
 pub const HINTS: &str = "enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit";
 
@@ -33,7 +35,7 @@ impl Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Cursor {
     pub lane: usize,
-    pub task: usize,
+    pub card: usize,
     pub child: Option<usize>,
 }
 
@@ -54,19 +56,26 @@ pub enum Mode {
 #[derive(Debug, Clone, Default)]
 pub struct App {
     pub board: Board,
-    pub lanes: Vec<LaneView>,
+    pub lanes: Vec<LaneModel>,
     pub cursor: Cursor,
     pub mode: Mode,
     pub status: String,
     pub error: bool,
+    pub now: i64,
     load_error: bool,
 }
 
 impl App {
     pub fn new(board: Board) -> Self {
+        Self::new_at(board, now_secs())
+    }
+
+    pub fn new_at(board: Board, now: i64) -> Self {
+        let lanes = view::build(&board);
         let mut app = Self {
-            lanes: board.lanes(),
             board,
+            lanes,
+            now,
             ..Self::default()
         };
         app.clamp();
@@ -74,14 +83,23 @@ impl App {
     }
 
     pub fn set_board(&mut self, board: Board) {
-        self.lanes = board.lanes();
+        self.set_board_at(board, now_secs());
+    }
+
+    pub fn set_board_at(&mut self, board: Board, now: i64) {
+        let key = self.selected_key();
+        let child = self.selected_child_name();
+        let lane = self.cursor.lane;
+        let card = self.cursor.card;
+        self.lanes = view::build(&board);
         self.board = board;
+        self.now = now;
         if self.load_error {
             self.status.clear();
             self.error = false;
             self.load_error = false;
         }
-        self.clamp();
+        self.restore_selection(key, child, lane, card);
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
@@ -105,10 +123,14 @@ impl App {
         self.load_error = true;
     }
 
-    pub fn selected_task(&self) -> Option<&TaskView> {
+    pub fn selected_card(&self) -> Option<&view::Card> {
         self.lanes
             .get(self.cursor.lane)
-            .and_then(|lane| lane.tasks.get(self.cursor.task))
+            .and_then(|lane| lane.cards.get(self.cursor.card))
+    }
+
+    pub fn selected_task(&self) -> Option<&TaskView> {
+        self.selected_card().map(|card| &card.view)
     }
 
     pub fn selected_child(&self) -> Option<&Workspace> {
@@ -256,23 +278,23 @@ impl App {
         let Some(lane) = self.lanes.get(self.cursor.lane) else {
             return;
         };
-        if lane.tasks.is_empty() {
+        if lane.cards.is_empty() {
             return;
         }
-        let task = self.cursor.task.min(lane.tasks.len() - 1);
+        let card = self.cursor.card.min(lane.cards.len() - 1);
         match self.cursor.child {
             None => {
-                if !lane.tasks[task].workspaces.is_empty() {
+                if !lane.cards[card].workspaces().is_empty() {
                     self.cursor.child = Some(0);
-                } else if task + 1 < lane.tasks.len() {
-                    self.cursor.task = task + 1;
+                } else if card + 1 < lane.cards.len() {
+                    self.cursor.card = card + 1;
                 }
             }
             Some(child) => {
-                if child + 1 < lane.tasks[task].workspaces.len() {
+                if child + 1 < lane.cards[card].workspaces().len() {
                     self.cursor.child = Some(child + 1);
-                } else if task + 1 < lane.tasks.len() {
-                    self.cursor.task = task + 1;
+                } else if card + 1 < lane.cards.len() {
+                    self.cursor.card = card + 1;
                     self.cursor.child = None;
                 }
             }
@@ -283,8 +305,8 @@ impl App {
         match self.cursor.child {
             Some(0) => self.cursor.child = None,
             Some(child) => self.cursor.child = Some(child - 1),
-            None if self.cursor.task > 0 => {
-                self.cursor.task -= 1;
+            None if self.cursor.card > 0 => {
+                self.cursor.card -= 1;
                 self.cursor.child = None;
             }
             None => {}
@@ -292,11 +314,14 @@ impl App {
     }
 
     fn move_lane(&mut self, delta: isize) {
+        if self.lanes.is_empty() {
+            return;
+        }
         let lane =
             (self.cursor.lane as isize + delta).clamp(0, self.lanes.len() as isize - 1) as usize;
         self.cursor = Cursor {
             lane,
-            task: 0,
+            card: 0,
             child: None,
         };
     }
@@ -305,22 +330,27 @@ impl App {
         if let Some(workspace) = self.selected_child() {
             return Some(Action::Open(workspace.workspace.clone()));
         }
-        self.selected_task().map(|task| {
-            Action::Open(
-                task.id
-                    .clone()
-                    .unwrap_or_else(|| task.workspaces[0].workspace.clone()),
-            )
-        })
+        self.selected_task()
+            .and_then(|task| {
+                task.id.clone().or_else(|| {
+                    task.workspaces
+                        .first()
+                        .map(|workspace| workspace.workspace.clone())
+                })
+            })
+            .map(Action::Open)
     }
 
     fn mark_selected(&mut self) -> Option<Action> {
         if let Some(workspace) = self.selected_child() {
             return Some(Action::MarkWorkspace(workspace.workspace.clone()));
         }
-        self.selected_task().map(|task| match &task.id {
-            Some(id) => Action::MarkTask(id.clone()),
-            None => Action::MarkWorkspace(task.workspaces[0].workspace.clone()),
+        self.selected_task().and_then(|task| match &task.id {
+            Some(id) => Some(Action::MarkTask(id.clone())),
+            None => task
+                .workspaces
+                .first()
+                .map(|workspace| Action::MarkWorkspace(workspace.workspace.clone())),
         })
     }
 
@@ -350,11 +380,68 @@ impl App {
             self.set_error("no open tasks; press n to create one");
             return None;
         }
+        let Some(workspace) = task.workspaces.first() else {
+            self.set_error("the selected card has no workspace");
+            return None;
+        };
         self.mode = Mode::Assign {
-            workspace: task.workspaces[0].workspace.clone(),
+            workspace: workspace.workspace.clone(),
             selected: 0,
         };
         None
+    }
+
+    fn selected_key(&self) -> Option<CardKey> {
+        self.selected_card().map(|card| card.key.clone())
+    }
+
+    fn selected_child_name(&self) -> Option<String> {
+        self.selected_child()
+            .map(|workspace| workspace.workspace.clone())
+    }
+
+    fn find_key(&self, key: &CardKey) -> Option<(usize, usize)> {
+        self.lanes
+            .iter()
+            .enumerate()
+            .find_map(|(lane_index, lane)| {
+                lane.cards
+                    .iter()
+                    .position(|card| &card.key == key)
+                    .map(|card_index| (lane_index, card_index))
+            })
+    }
+
+    fn restore_selection(
+        &mut self,
+        key: Option<CardKey>,
+        child: Option<String>,
+        lane: usize,
+        card: usize,
+    ) {
+        if let Some(key) = key {
+            if let Some((lane_index, card_index)) = self.find_key(&key) {
+                let child_index = child.and_then(|name| {
+                    self.lanes[lane_index].cards[card_index]
+                        .view
+                        .workspaces
+                        .iter()
+                        .position(|workspace| workspace.workspace == name)
+                });
+                self.cursor = Cursor {
+                    lane: lane_index,
+                    card: card_index,
+                    child: child_index,
+                };
+                return;
+            }
+        }
+        self.cursor = Cursor {
+            lane,
+            card,
+            child: None,
+        };
+        self.clamp();
     }
 
     fn clamp(&mut self) {
@@ -366,17 +453,17 @@ impl App {
             self.cursor.lane = self.lanes.len() - 1;
         }
         let lane = &self.lanes[self.cursor.lane];
-        if lane.tasks.is_empty() {
-            self.cursor.task = 0;
+        if lane.cards.is_empty() {
+            self.cursor.card = 0;
             self.cursor.child = None;
             return;
         }
-        if self.cursor.task >= lane.tasks.len() {
-            self.cursor.task = lane.tasks.len() - 1;
+        if self.cursor.card >= lane.cards.len() {
+            self.cursor.card = lane.cards.len() - 1;
             self.cursor.child = None;
         }
         if let Some(child) = self.cursor.child {
-            if child >= lane.tasks[self.cursor.task].workspaces.len() {
+            if child >= lane.cards[self.cursor.card].workspaces().len() {
                 self.cursor.child = None;
             }
         }
@@ -387,6 +474,8 @@ impl App {
 mod tests {
     use super::*;
     use crate::model::{Clean, Hold, Lane, State, Wait};
+
+    const NOW: i64 = 1_000_000;
 
     fn ws(name: &str, state: &str, hold: &str) -> Workspace {
         Workspace {
@@ -441,11 +530,11 @@ mod tests {
 
     #[test]
     fn lanes_from_the_fixture() {
-        let app = App::new(board());
+        let app = App::new_at(board(), NOW);
         let lanes: Vec<(Lane, usize)> = app
             .lanes
             .iter()
-            .map(|lane| (lane.lane, lane.tasks.len()))
+            .map(|lane| (lane.lane, lane.cards.len()))
             .collect();
         assert_eq!(
             lanes,
@@ -461,9 +550,9 @@ mod tests {
 
     #[test]
     fn navigation_expands_the_selected_task() {
-        let mut app = App::new(board());
-        // Active is the second lane; the first task alphabetically is "Active
-        // task" (id active), the loose row sorts after it.
+        let mut app = App::new_at(board(), NOW);
+        // Active is the second lane; the attention order puts "Active task"
+        // before "Loose work".
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.cursor.lane, 1);
         assert_eq!(app.selected_task().unwrap().title, "Active task");
@@ -481,7 +570,7 @@ mod tests {
 
     #[test]
     fn enter_opens_the_task_or_the_child() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(
             press(&mut app, KeyCode::Enter),
@@ -496,7 +585,7 @@ mod tests {
 
     #[test]
     fn d_marks_the_task_or_the_workspace() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(
             press(&mut app, KeyCode::Char('d')),
@@ -518,7 +607,7 @@ mod tests {
 
     #[test]
     fn s_starts_a_seat_only_for_an_assigned_task() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(
             press(&mut app, KeyCode::Char('s')),
@@ -534,7 +623,7 @@ mod tests {
 
     #[test]
     fn n_prompts_and_submits_a_task_title() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         assert_eq!(press(&mut app, KeyCode::Char('n')), None);
         for ch in "Fix board".chars() {
             press(&mut app, KeyCode::Char(ch));
@@ -548,7 +637,7 @@ mod tests {
 
     #[test]
     fn a_assigns_the_selected_ungrouped_workspace() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char('j'));
         press(&mut app, KeyCode::Char('j'));
@@ -570,7 +659,7 @@ mod tests {
 
     #[test]
     fn a_refuses_an_assigned_task() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(press(&mut app, KeyCode::Char('a')), None);
         assert!(app.error);
@@ -578,8 +667,41 @@ mod tests {
     }
 
     #[test]
+    fn selection_follows_a_task_to_its_new_lane() {
+        let mut app = App::new_at(board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("active"));
+
+        let mut moved = board();
+        for workspace in &mut moved.workspaces {
+            if workspace.workspace == "ws-active" {
+                workspace.state = State::Merged;
+                workspace.hold = Hold::Idle;
+            }
+        }
+        app.set_board_at(moved, NOW);
+        assert_eq!(app.lanes[app.cursor.lane].lane, Lane::Review);
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn selection_clamps_when_the_card_disappears() {
+        let mut app = App::new_at(board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected_task().unwrap().id, None);
+
+        app.set_board_at(Board::default(), NOW);
+        assert_eq!(app.cursor.lane, 1);
+        assert_eq!(app.cursor.card, 0);
+        assert!(app.selected_task().is_none());
+    }
+
+    #[test]
     fn help_and_quit() {
-        let mut app = App::new(board());
+        let mut app = App::new_at(board(), NOW);
         assert_eq!(press(&mut app, KeyCode::Char('?')), None);
         assert_eq!(app.mode, Mode::Help);
         // Any key closes the overlay.

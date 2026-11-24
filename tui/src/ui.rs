@@ -1,15 +1,19 @@
-// Rendering only: the five derived lanes, the task expansion for the selected
-// row, the status line, and the two modal prompts.
+// Rendering only: the five derived lanes as cards, the lane headers, the
+// status line, and the modal prompts.
 use crate::app::{App, HINTS, Mode};
-use crate::model::LaneView;
+use crate::view::{LaneModel, truncate};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
+    if area.width < 50 || area.height < 12 {
+        render_too_small(frame, area);
+        return;
+    }
     let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -33,120 +37,107 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App) {
-    let tasks: usize = app.lanes.iter().map(|lane| lane.tasks.len()).sum();
+    let cards: usize = app.lanes.iter().map(|lane| lane.cards.len()).sum();
     let workspaces: usize = app
         .lanes
         .iter()
-        .flat_map(|lane| &lane.tasks)
-        .map(|task| task.workspaces.len())
+        .flat_map(|lane| &lane.cards)
+        .map(|card| card.workspaces().len())
         .sum();
     let line = Line::from(vec![
         Span::styled(
             "rookery board",
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("   {tasks} tasks   {workspaces} workspaces")),
+        Span::raw(format!("   {cards} cards   {workspaces} workspaces")),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_lanes(frame: &mut Frame, area: Rect, app: &App) {
-    let columns = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(area);
+    let wide = area.width >= 110;
+    let columns = Layout::horizontal([Constraint::Ratio(1, 5); 5])
+        .spacing(1)
+        .split(area);
     for (index, lane) in app.lanes.iter().enumerate() {
-        render_lane(frame, columns[index], app, lane, index);
+        render_lane(frame, columns[index], app, lane, index, wide);
     }
 }
 
-fn render_lane(frame: &mut Frame, area: Rect, app: &App, lane: &LaneView, index: usize) {
+fn render_lane(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    lane: &LaneModel,
+    index: usize,
+    wide: bool,
+) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let selected = app.cursor.lane == index;
+    let workspaces: usize = lane.cards.iter().map(|card| card.workspaces().len()).sum();
+    let label = truncate(
+        &format!(
+            "{} {} · {}ws",
+            lane.lane.title(),
+            lane.cards.len(),
+            workspaces
+        ),
+        area.width as usize,
+    );
     let mut header_style = Style::default().add_modifier(Modifier::BOLD);
     if selected {
         header_style = header_style.add_modifier(Modifier::REVERSED);
     }
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            format!("{} ({})", lane.lane.title(), lane.tasks.len()),
-            header_style,
-        )),
-        rows[0],
-    );
+    frame.render_widget(Paragraph::new(Line::styled(label, header_style)), rows[0]);
 
-    let (lines, cursor_line) = lane_lines(app, lane, index);
+    let (lines, cursor) = lane_lines(app, lane, index, rows[1].width, wide);
     let height = rows[1].height as usize;
-    let scroll = match cursor_line {
-        Some(line) if height > 0 && line + 1 > height => line + 1 - height,
+    let scroll = match cursor {
+        Some((start, end)) if height > 0 && end - start >= height => start,
+        Some((_, end)) if height > 0 && end > height => end - height,
         _ => 0,
     };
-    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows[1]);
+    frame.render_widget(
+        Paragraph::new(lines).scroll((scroll.min(u16::MAX as usize) as u16, 0)),
+        rows[1],
+    );
 }
 
-/// Build the visible rows of one lane. Only the selected task expands, so the
-/// board stays dense with many tasks while a task's conversations are one
-/// keystroke away. Returns the line index of the cursor for scrolling.
-fn lane_lines(app: &App, lane: &LaneView, index: usize) -> (Vec<Line<'static>>, Option<usize>) {
-    if lane.tasks.is_empty() {
+/// Build the visible rows of one lane. The selected card is expanded, so the
+/// cursor range covers its full card and the lane scrolls by lines, not cards.
+fn lane_lines(
+    app: &App,
+    lane: &LaneModel,
+    index: usize,
+    width: u16,
+    wide: bool,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    if lane.cards.is_empty() {
         return (
             vec![Line::styled(
-                "(empty)",
+                "(no tasks)",
                 Style::default().add_modifier(Modifier::DIM),
             )],
             None,
         );
     }
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut cursor_line = None;
-    for (task_index, task) in lane.tasks.iter().enumerate() {
-        let is_selected = app.cursor.lane == index && app.cursor.task == task_index;
-        let count = task.workspaces.len();
-        let label = if count == 0 {
-            task.title.clone()
+    let mut cursor = None;
+    for (card_index, card) in lane.cards.iter().enumerate() {
+        let selected = app.cursor.lane == index && app.cursor.card == card_index;
+        let start = lines.len();
+        let child = if selected { app.cursor.child } else { None };
+        let card_lines = if wide {
+            card.lines(width as usize, selected, child, app.now)
         } else {
-            format!("{} ({count})", task.title)
+            card.compact_lines(width as usize, selected, child, app.now)
         };
-        let mut style = Style::default();
-        if is_selected {
-            style = style.add_modifier(Modifier::BOLD);
-            if app.cursor.child.is_none() {
-                style = style.add_modifier(Modifier::REVERSED);
-                cursor_line = Some(lines.len());
-            }
-        }
-        lines.push(Line::styled(label, style));
-
-        if !is_selected {
-            continue;
-        }
-        for (child_index, workspace) in task.workspaces.iter().enumerate() {
-            let last = child_index + 1 == count;
-            let glyph = if last { "└" } else { "├" };
-            let stem = if last { " " } else { "│" };
-            let state = if workspace.wait.is_some() {
-                "wait".to_string()
-            } else {
-                workspace.state.as_str().to_string()
-            };
-            let hold = workspace.hold.as_str().to_string();
-            let selected_child = app.cursor.child == Some(child_index);
-            let name_style = if selected_child {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
-                Style::default().add_modifier(Modifier::DIM)
-            };
-            lines.push(Line::styled(
-                format!("{glyph} {}", workspace.workspace),
-                name_style,
-            ));
-            if selected_child {
-                cursor_line = Some(lines.len() - 1);
-            }
-            lines.push(Line::styled(
-                format!("{stem}   {state}  {hold}"),
-                Style::default().add_modifier(Modifier::DIM),
-            ));
+        lines.extend(card_lines);
+        if selected {
+            cursor = Some((start, lines.len()));
         }
     }
-    (lines, cursor_line)
+    (lines, cursor)
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -254,6 +245,23 @@ fn render_assign(frame: &mut Frame, area: Rect, app: &App, workspace: &str, sele
     );
 }
 
+fn render_too_small(frame: &mut Frame, area: Rect) {
+    let rect = centered_rect(34, 4, area);
+    frame.render_widget(Clear, rect);
+    let lines = vec![
+        Line::from("Terminal too small").alignment(Alignment::Center),
+        Line::from("need at least 50x12").alignment(Alignment::Center),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("rookery board"),
+        ),
+        rect,
+    );
+}
+
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
@@ -265,34 +273,117 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
-    use crate::model::{Board, Clean, Hold, State, Task, Workspace};
+    use crate::model::{Board, Clean, Hold, Session, State, Task, Wait, Workspace};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn workspace(name: &str, state: &str, hold: &str) -> Workspace {
+    const NOW: i64 = 1_700_000_000;
+
+    fn ws(name: &str, state: State, hold: Hold) -> Workspace {
         Workspace {
             workspace: name.to_string(),
-            state: State::parse(state).unwrap_or_default(),
-            hold: match hold {
-                "live" => Hold::Live,
-                "session" => Hold::Session,
-                _ => Hold::Idle,
-            },
+            state,
+            hold,
             ..Workspace::default()
         }
     }
 
-    fn task(id: &str, title: &str, workspaces: Vec<&str>) -> Task {
-        Task {
-            id: id.to_string(),
-            title: title.to_string(),
-            status: "open".to_string(),
-            workspaces: workspaces.into_iter().map(str::to_string).collect(),
+    fn golden_board() -> Board {
+        let mut workspaces = Vec::new();
+        let mut tasks = Vec::new();
+
+        tasks.push(Task {
+            id: "plan".into(),
+            title: "Plan the next release".into(),
+            status: "open".into(),
+            created: NOW - 3 * 86_400,
+            updated: NOW - 2 * 86_400,
             ..Task::default()
-        }
+        });
+
+        let mut cache_fix = ws("ws-cache-fix", State::Merged, Hold::Live);
+        cache_fix.task = Some("cache".into());
+        cache_fix.age = 4 * 3_600;
+        let mut cache_test = ws("ws-cache-test", State::Unpushed, Hold::Idle);
+        cache_test.task = Some("cache".into());
+        cache_test.age = 2 * 3_600;
+        workspaces.extend([cache_fix, cache_test]);
+        tasks.push(Task {
+            id: "cache".into(),
+            title: "Fix the board cache".into(),
+            status: "open".into(),
+            workspaces: vec!["ws-cache-fix".into(), "ws-cache-test".into()],
+            created: NOW - 86_400,
+            updated: NOW - 4 * 3_600,
+            ..Task::default()
+        });
+
+        let mut loose = ws("ws-loose", State::Unpushed, Hold::Idle);
+        loose.description = "Loose experiment".into();
+        loose.age = 3_600;
+        workspaces.push(loose);
+
+        let mut polish = ws("ws-polish", State::Merged, Hold::Idle);
+        polish.task = Some("polish".into());
+        polish.age = 5_400;
+        polish.session = Some(Session {
+            title: Some("Board polish".into()),
+            updated: Some(NOW - 1_800),
+        });
+        workspaces.push(polish);
+        tasks.push(Task {
+            id: "polish".into(),
+            title: "Polish the cards".into(),
+            status: "open".into(),
+            workspaces: vec!["ws-polish".into()],
+            created: NOW - 2 * 86_400,
+            updated: NOW - 1_800,
+            ..Task::default()
+        });
+
+        let mut design = ws("ws-design", State::Empty, Hold::Idle);
+        design.task = Some("design".into());
+        design.age = 3 * 86_400;
+        design.wait = Some(Wait {
+            reason: "design review".into(),
+            age: 3 * 86_400,
+            days: 3,
+        });
+        workspaces.push(design);
+        tasks.push(Task {
+            id: "design".into(),
+            title: "Wait for the design review".into(),
+            status: "open".into(),
+            workspaces: vec!["ws-design".into()],
+            created: NOW - 4 * 86_400,
+            updated: NOW - 3 * 86_400,
+            ..Task::default()
+        });
+
+        let mut old = ws("ws-old", State::Unpushed, Hold::Idle);
+        old.task = Some("old".into());
+        old.age = 4 * 3_600;
+        old.clean = Some(Clean { age: 2 * 3_600 });
+        workspaces.push(old);
+        tasks.push(Task {
+            id: "old".into(),
+            title: "Clean the old seat".into(),
+            status: "open".into(),
+            workspaces: vec!["ws-old".into()],
+            created: NOW - 5 * 86_400,
+            updated: NOW - 2 * 3_600,
+            ..Task::default()
+        });
+
+        Board { workspaces, tasks }
     }
 
-    fn render(app: &App, width: u16, height: u16) -> String {
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn render_text(app: &App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| super::render(frame, app)).unwrap();
@@ -309,8 +400,23 @@ mod tests {
         out
     }
 
-    fn assert_board(app: &App, width: u16, height: u16, expected: &str) {
-        let actual = render(app, width, height);
+    fn golden_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("golden")
+            .join(name)
+    }
+
+    fn assert_golden(name: &str, app: &App, width: u16, height: u16) {
+        let actual = render_text(app, width, height);
+        let path = golden_path(name);
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &actual).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("missing golden {}: {err}", path.display()));
         assert_eq!(
             actual, expected,
             "\n--- actual ---\n{actual}\n--- expected ---\n{expected}"
@@ -318,105 +424,40 @@ mod tests {
     }
 
     #[test]
+    fn golden_120x40() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        assert_golden("board-120x40.txt", &app, 120, 40);
+    }
+
+    #[test]
+    fn golden_160x50() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        assert_golden("board-160x50.txt", &app, 160, 50);
+    }
+
+    #[test]
+    fn too_small_40x12() {
+        let app = App::new_at(golden_board(), NOW);
+        assert_golden("too-small-40x12.txt", &app, 40, 12);
+    }
+
+    #[test]
     fn empty_board() {
-        assert_board(
-            &App::new(Board::default()),
-            100,
-            4,
-            concat!(
-                "rookery board   0 tasks   0 workspaces\n",
-                "Backlog (0)         Active (0)          Review (0)          Blocked (0)         To Clean (0)\n",
-                "(empty)             (empty)             (empty)             (empty)             (empty)\n",
-                "enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit\n",
-            ),
-        );
-    }
-
-    #[test]
-    fn all_five_lanes() {
-        assert_board(
-            &App::new(five_lane_board()),
-            120,
-            4,
-            concat!(
-                "rookery board   5 tasks   4 workspaces\n",
-                "Backlog (1)             Active (1)              Review (1)              Blocked (1)             To Clean (1)\n",
-                "Later task              Active task (1)         Review task (1)         Blocked task (1)        Clean task (1)\n",
-                "enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit\n",
-            ),
-        );
-    }
-
-    #[test]
-    fn expanded_task_with_two_conversations() {
-        let mut app = App::new(two_conversation_board());
-        app.handle_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('l'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_board(
-            &app,
-            120,
-            8,
-            concat!(
-                "rookery board   1 tasks   2 workspaces\n",
-                "Backlog (0)             Active (1)              Review (0)              Blocked (0)             To Clean (0)\n",
-                "(empty)                 Active task (2)         (empty)                 (empty)                 (empty)\n",
-                "                        ├ ws-first\n",
-                "                        │   unpushed  live\n",
-                "                        └ ws-second\n",
-                "                            merged  -\n",
-                "enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit\n",
-            ),
-        );
+        let app = App::new_at(Board::default(), NOW);
+        let text = render_text(&app, 100, 24);
+        assert!(text.contains("0 cards"));
+        assert!(text.contains("(no tasks)"));
     }
 
     #[test]
     fn help_overlay() {
-        let app = App::new(Board::default());
-        let mut app = app;
-        app.handle_key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('?'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        let text = render(&app, 100, 24);
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('?'));
+        let text = render_text(&app, 100, 24);
         assert!(text.contains("open the selected conversation's seat"));
         assert!(text.contains("lanes are derived, never stored"));
-    }
-
-    fn five_lane_board() -> Board {
-        let mut backlog = task("later", "Later task", vec![]);
-        backlog.title = "Later task".into();
-        let mut active = workspace("ws-active", "unpushed", "live");
-        active.task = Some("active".into());
-        let mut review = workspace("ws-review", "merged", "-");
-        review.task = Some("review".into());
-        let mut blocked = workspace("ws-blocked", "empty", "-");
-        blocked.task = Some("blocked".into());
-        blocked.wait = Some(crate::model::Wait::default());
-        let mut clean = workspace("ws-clean", "merged", "-");
-        clean.task = Some("clean".into());
-        clean.clean = Some(Clean::default());
-        Board {
-            workspaces: vec![active, review, blocked, clean],
-            tasks: vec![
-                backlog,
-                task("active", "Active task", vec!["ws-active"]),
-                task("review", "Review task", vec!["ws-review"]),
-                task("blocked", "Blocked task", vec!["ws-blocked"]),
-                task("clean", "Clean task", vec!["ws-clean"]),
-            ],
-        }
-    }
-
-    fn two_conversation_board() -> Board {
-        let mut first = workspace("ws-first", "unpushed", "live");
-        first.task = Some("active".into());
-        let mut second = workspace("ws-second", "merged", "-");
-        second.task = Some("active".into());
-        Board {
-            workspaces: vec![first, second],
-            tasks: vec![task("active", "Active task", vec!["ws-first", "ws-second"])],
-        }
     }
 }
