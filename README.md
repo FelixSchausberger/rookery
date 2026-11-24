@@ -5,7 +5,8 @@ the workspace, claims it with a change description, starts OpenCode rooted
 there, classifies every workspace from jj state, and reclaims the finished
 ones. It also drives herdr seats: a new workspace, a new herdr tab, and a
 lookup from an OpenCode session back to its pane. Tasks group workspaces that
-belong to one piece of work, and the JSON board feeds a TUI client.
+belong to one piece of work, the JSON board feeds a TUI client, and
+`rookery-tui` renders that board.
 
 A rookery is a colony of nests in one place: one base directory, one workspace
 per task, one agent per workspace. A rook is also a piece on a board, which is
@@ -45,6 +46,7 @@ and in a Home Manager module:
     base = "${config.home.homeDirectory}/.local/share/ocws";
     workspacePrefix = "ws-";
     trunk = "main@origin";
+    tui.enable = true;
   };
 }
 ```
@@ -132,6 +134,28 @@ resolves directly, and a task id resolves to a live grouped workspace or the
 first one jj still lists. The verb is backend-neutral; the herdr-specific
 lookup stays inside the command.
 
+## Board TUI
+
+`rookery-tui` is the one board: tasks grouped into derived lanes, with the
+selected task's conversations expanded underneath it.
+
+- Backlog: no workspaces. Active: a live or unpushed workspace. Review: every
+  workspace is merged, empty, or in flight. Blocked: a conflict or a wait
+  marker. To Clean: every workspace is marked. Archived tasks are hidden.
+- Keys: `enter` opens the seat, `d` marks the task (or this workspace) for
+  cleanup, `n` creates a backlog task, `s` starts a seat for the task, `a`
+  assigns an ungrouped workspace, `h/j/k/l` move, `r` refreshes, `?` opens the
+  key help, and `q` quits.
+- It reads `ls --json` and `task list --json` and writes only through the CLI
+  (`open`, `task add|assign|done`, `clean`, `herdr --task`). It never reads the
+  task store, the jj store, or the base, and it never calls herdr directly.
+- The board refreshes every two seconds and after every action. A failed call
+  keeps the last board and reports the error on the status line.
+
+Install it with `programs.rookery.tui.enable = true`, or build it with
+`nix build .#rookery-tui`. The client is terminal-agnostic; a herdr popup, a
+zellij pane, or a plain terminal only decide where it runs.
+
 ## Liveness and GC
 
 `rookery gc` removes empty and merged workspaces that sit idle past a gate and
@@ -173,6 +197,9 @@ exits cleanly when `gc.repo` is absent, so a host whose checkout is optional
 stays green. Consumers that already run their own GC pass should leave
 `gc.enable` off and call `<finalPackage>/bin/rookery gc` themselves.
 
+`tui.enable` installs `rookery-tui`, and `tui.package` overrides the package.
+The TUI has no environment counterpart.
+
 ## Environment
 
 - `ROOKERY_V2=1` runs the `opencode2` entry point instead of `opencode`
@@ -199,8 +226,12 @@ fleet keeps classifying and reclaiming as before.
 nix develop
 nix fmt
 nix flake check
+nix build .#rookery
+nix build .#rookery-tui
 bash tests/board.sh
 bash tests/tasks.sh
+cargo test --manifest-path tui/Cargo.toml
+cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
 ```
 
 `tests/board.sh` builds a throwaway jj repository with a local git origin and
@@ -212,6 +243,10 @@ real workspace or the user's cache.
 herdr: the NDJSON board, store writes and concurrent writers, maintenance across
 rename and removal, cleanup marks and the sweep, seat focus, task seats, and
 corrupt-store handling.
+
+The TUI crate has its own unit tests for lane derivation, key handling, CLI
+argv, and `TestBackend` buffer snapshots; `checks.rookery-tui` runs them in the
+Nix sandbox.
 
 ## License
 

@@ -29,9 +29,33 @@
         ...
       }: let
         rookery = pkgs.callPackage ./packages/rookery.nix {};
+        rookeryTui = pkgs.rustPlatform.buildRustPackage {
+          pname = "rookery-tui";
+          version = "0.4.0";
+          src = pkgs.lib.cleanSourceWith {
+            src = ./tui;
+            filter = path: _: let
+              base = baseNameOf path;
+            in
+              base != "target" && base != "result";
+          };
+          cargoLock.lockFile = ./tui/Cargo.lock;
+          meta = {
+            description = "The Rookery board: tasks and their conversations";
+            homepage = "https://github.com/FelixSchausberger/rookery";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "rookery-tui";
+          };
+        };
       in {
         packages.rookery = rookery;
+        packages.rookery-tui = rookeryTui;
         packages.default = rookery;
+
+        # The TUI is a client of the CLI contract; the check builds the crate
+        # and runs its tests (lane derivation, key handling, CLI argv, and the
+        # TestBackend snapshots) in the sandbox.
+        checks.rookery-tui = rookeryTui;
 
         # The board's classification, cache key and freshness rules against a
         # fixture repository: cold/warm/serial/parallel output equality,
@@ -87,6 +111,10 @@
             pkgs.jq
             pkgs.shellcheck
             pkgs.prek
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.rustfmt
+            pkgs.clippy
           ];
           name = "rookery";
         };
@@ -97,6 +125,7 @@
             alejandra.enable = true;
             shfmt.enable = true;
             prettier.enable = true;
+            rustfmt.enable = true;
           };
           settings.global.excludes = [
             ".direnv/*"

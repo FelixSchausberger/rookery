@@ -23,5 +23,9 @@ jobs:
         run: nix flake check --print-build-logs
       - name: Build the package
         run: nix build .#rookery --print-build-logs
+      - name: Build the TUI
+        run: nix build .#rookery-tui --print-build-logs
       - name: Formatting and shellcheck
         run: nix develop --command prek run --all-files
+      - name: Clippy
+        run: nix develop --command cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
