@@ -1,4 +1,4 @@
-rookery board   6 cards   6 workspaces
+rookery board  6 cards  6 workspaces   live 1  session 0  wait 1  conflict 0  stale 1   refreshed 0s
 Backlog 1 · 0ws                 Active 2 · 3ws                  Review 1 · 1ws                   Blocked 1 · 1ws                 To Clean 1 · 1ws
 ╭─────────────────────────────╮ ╭─────────────────────────────╮ ╭──────────────────────────────╮ ╭─────────────────────────────╮ ╭─────────────────────────────╮
 │Plan the next release        │ │Fix the board cache         2│ │Polish the cards             1│ │Wait for the design review  1│ │Clean the old seat          1│
@@ -47,4 +47,4 @@ Backlog 1 · 0ws                 Active 2 · 3ws                  Review 1 · 1w
 
 
 
-enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit
+enter open  d mark  space collapse  i detail  ? help

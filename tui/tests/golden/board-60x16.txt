@@ -1,4 +1,4 @@
-rookery board   6 cards   6 workspaces
+rookery board  6 cards  6 workspaces   refreshed 0s
  B1  [A2]  R1   X1   C1
 Active 2 · 3ws
 ▌ Fix the board cache (2)
@@ -13,4 +13,4 @@ Active 2 · 3ws
 
 
 
-enter open  d done  n new  s seat  a assign  r refresh  ? he
+enter open  d mark  space collapse  i detail  ? help

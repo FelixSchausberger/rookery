@@ -16,6 +16,7 @@ use crossterm::terminal::{
 use model::Board;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use rookery_core::util::now_secs;
 use std::io;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -65,6 +66,7 @@ fn run(
     });
 
     loop {
+        app.tick(now_secs());
         terminal.draw(|frame| ui::render(frame, app))?;
 
         while let Ok(result) = rx.try_recv() {

@@ -1,8 +1,8 @@
-// Rendering only: the five derived lanes as cards, the focused lane and its
-// bar on narrow terminals, the status line, and the modal prompts.
-use crate::app::{App, HINTS, Mode};
-use crate::model::Lane;
-use crate::view::truncate;
+// Rendering only: the derived lanes as cards, the header summary, the focused
+// lane and its bar on narrow terminals, the detail pane, and the modals.
+use crate::app::{App, Mode};
+use crate::model::{Hold, Lane, State, Workspace};
+use crate::view::{relative_age, truncate, wrap};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -17,16 +17,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_too_small(frame, area);
         return;
     }
-    if area.width >= 110 {
+
+    let wide_terminal = area.width >= 110;
+    let (header, lane_bar, body, footer) = if wide_terminal {
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(area);
-        render_title(frame, chunks[0], app);
-        render_lanes(frame, chunks[1], app, true);
-        render_footer(frame, chunks[2], app);
+        (chunks[0], None, chunks[1], chunks[2])
     } else {
         let chunks = Layout::vertical([
             Constraint::Length(1),
@@ -35,39 +35,133 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),
         ])
         .split(area);
-        render_title(frame, chunks[0], app);
-        render_lane_bar(frame, chunks[1], app);
-        render_lanes(frame, chunks[2], app, false);
-        render_footer(frame, chunks[3], app);
+        (chunks[0], Some(chunks[1]), chunks[2], chunks[3])
+    };
+
+    let detail_right = app.detail && area.width >= 140;
+    let detail_bottom = app.detail && !detail_right && area.width >= 70 && area.height >= 24;
+    let detail_allowed = detail_right || detail_bottom;
+
+    render_title(frame, header, app);
+    if let Some(bar) = lane_bar {
+        render_lane_bar(frame, bar, app);
     }
 
-    match &app.mode {
-        Mode::Help => render_help(frame, area),
-        Mode::TaskInput { text } => render_input(frame, area, text),
-        Mode::Assign {
-            workspace,
-            selected,
-        } => render_assign(frame, area, app, workspace, *selected),
-        Mode::Normal => {}
+    let (board_area, detail_area) = if detail_right {
+        let parts = Layout::horizontal([Constraint::Min(0), Constraint::Length(32)])
+            .spacing(1)
+            .split(body);
+        (parts[0], Some(parts[1]))
+    } else if detail_bottom {
+        let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(8)]).split(body);
+        (parts[0], Some(parts[1]))
+    } else {
+        (body, None)
+    };
+
+    render_lanes(frame, board_area, app, wide_terminal);
+    if let Some(detail) = detail_area {
+        render_detail(frame, detail, app);
+    }
+    render_footer(frame, footer, app, detail_allowed);
+
+    if app.mode == Mode::Help {
+        render_help(frame, area, &mut app.help_scroll);
+    } else {
+        match &app.mode {
+            Mode::TaskInput { text } => render_input(frame, area, text),
+            Mode::Assign {
+                workspace,
+                selected,
+            } => render_assign(frame, area, app, workspace, *selected),
+            Mode::Normal | Mode::Help => {}
+        }
+    }
+}
+
+#[derive(Default)]
+struct Summary {
+    cards: usize,
+    workspaces: usize,
+    live: usize,
+    session: usize,
+    wait: usize,
+    conflict: usize,
+    stale: usize,
+}
+
+fn summary(app: &App) -> Summary {
+    let mut summary = Summary::default();
+    for lane in &app.lanes {
+        summary.cards += lane.cards.len();
+        for card in &lane.cards {
+            for workspace in card.workspaces() {
+                summary.workspaces += 1;
+                match workspace.hold {
+                    Hold::Live => summary.live += 1,
+                    Hold::Session => summary.session += 1,
+                    Hold::Idle => {}
+                }
+                if workspace.wait.is_some() {
+                    summary.wait += 1;
+                }
+                if workspace.state == State::Conflict {
+                    summary.conflict += 1;
+                }
+                if workspace.hold == Hold::Idle
+                    && workspace.wait.is_none()
+                    && matches!(workspace.state, State::Empty | State::Merged)
+                {
+                    summary.stale += 1;
+                }
+            }
+        }
+    }
+    summary
+}
+
+fn refresh_age(app: &App) -> String {
+    let seconds = (app.clock - app.loaded_at).max(0);
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        relative_age(seconds)
     }
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App) {
-    let cards: usize = app.lanes.iter().map(|lane| lane.cards.len()).sum();
-    let workspaces: usize = app
-        .lanes
-        .iter()
-        .flat_map(|lane| &lane.cards)
-        .map(|card| card.workspaces().len())
-        .sum();
-    let line = Line::from(vec![
-        Span::styled(
-            "rookery board",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("   {cards} cards   {workspaces} workspaces")),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    if app.has_load_error() {
+        let text = truncate(&format!("! {}", app.status), area.width as usize);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                text,
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            area,
+        );
+        return;
+    }
+    let summary = summary(app);
+    let age = refresh_age(app);
+    let workspaces = if area.width >= 60 { "workspaces" } else { "ws" };
+    let mut spans = vec![
+        Span::styled("rookery board", title_style()),
+        Span::raw(format!(
+            "  {} cards  {} {workspaces}",
+            summary.cards, summary.workspaces
+        )),
+    ];
+    if area.width >= 110 {
+        spans.push(Span::styled(
+            format!(
+                "   live {}  session {}  wait {}  conflict {}  stale {}",
+                summary.live, summary.session, summary.wait, summary.conflict, summary.stale
+            ),
+            dim_style(),
+        ));
+    }
+    spans.push(Span::styled(format!("   refreshed {age}"), dim_style()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_lane_bar(frame: &mut Frame, area: Rect, app: &App) {
@@ -87,7 +181,7 @@ fn render_lane_bar(frame: &mut Frame, area: Rect, app: &App) {
         let style = if index == app.cursor.lane {
             Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
-            Style::default().add_modifier(Modifier::DIM)
+            dim_style()
         };
         spans.push(Span::styled(text, style));
         if index + 1 < app.lanes.len() {
@@ -107,7 +201,21 @@ fn short_lane(lane: Lane) -> &'static str {
     }
 }
 
+fn lane_meaning(lane: Lane) -> &'static str {
+    match lane {
+        Lane::Backlog => "no workspaces yet",
+        Lane::Active => "no live or unpushed work",
+        Lane::Review => "no merged or in-flight work",
+        Lane::Blocked => "no waits or conflicts",
+        Lane::ToClean => "no cleanup marks",
+    }
+}
+
 fn render_lanes(frame: &mut Frame, area: Rect, app: &mut App, wide_terminal: bool) {
+    if app.lanes.iter().all(|lane| lane.cards.is_empty()) {
+        render_empty(frame, area);
+        return;
+    }
     if wide_terminal {
         let columns = Layout::horizontal([Constraint::Ratio(1, 5); 5])
             .spacing(1)
@@ -120,6 +228,19 @@ fn render_lanes(frame: &mut Frame, area: Rect, app: &mut App, wide_terminal: boo
         let card_wide = area.width >= 70;
         render_lane(frame, area, app, index, card_wide);
     }
+}
+
+fn render_empty(frame: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from("No tasks yet.").alignment(Alignment::Center),
+        Line::from("Press n to create one.").alignment(Alignment::Center),
+    ];
+    let height = 2.min(area.height);
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect::new(area.x, y, area.width, height),
+    );
 }
 
 fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide: bool) {
@@ -138,7 +259,7 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide:
             area.width as usize,
         )
     };
-    let mut header_style = Style::default().add_modifier(Modifier::BOLD);
+    let mut header_style = title_style();
     if selected {
         header_style = header_style.add_modifier(Modifier::REVERSED);
     }
@@ -192,9 +313,6 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide:
     }
 }
 
-/// Build one lane's lines. The selected card's range is returned for the
-/// reveal calculation; expanded cards contribute their workspace rows even
-/// when they are not selected.
 fn lane_lines(
     app: &App,
     index: usize,
@@ -205,8 +323,8 @@ fn lane_lines(
     if lane.cards.is_empty() {
         return (
             vec![Line::styled(
-                "(no tasks)",
-                Style::default().add_modifier(Modifier::DIM),
+                truncate(&format!("({})", lane_meaning(lane.lane)), width as usize),
+                dim_style(),
             )],
             None,
         );
@@ -249,30 +367,209 @@ fn reveal(offset: usize, range: Option<(usize, usize)>, viewport: usize, content
     offset.min(max_offset)
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let hints = match app.mode {
-        Mode::Normal => HINTS,
-        Mode::Help => "any key closes",
-        Mode::TaskInput { .. } | Mode::Assign { .. } => "enter confirm   esc cancel",
-    };
-    let (text, style) = if app.status.is_empty() {
-        (
-            hints.to_string(),
-            Style::default().add_modifier(Modifier::DIM),
-        )
-    } else if app.error {
-        (format!("! {}", app.status), Style::default().fg(Color::Red))
-    } else {
-        (app.status.clone(), Style::default())
+fn render_footer(frame: &mut Frame, area: Rect, app: &App, detail_allowed: bool) {
+    let (text, style) = match &app.mode {
+        Mode::Help => ("j k scroll  esc close".to_string(), dim_style()),
+        Mode::TaskInput { .. } | Mode::Assign { .. } => {
+            ("enter confirm   esc cancel".to_string(), dim_style())
+        }
+        Mode::Normal => {
+            if app.has_load_error() {
+                ("r retry".to_string(), Style::default().fg(Color::Red))
+            } else if !app.status.is_empty() {
+                if app.error {
+                    (format!("! {}", app.status), Style::default().fg(Color::Red))
+                } else {
+                    (app.status.clone(), Style::default())
+                }
+            } else if app.detail && !detail_allowed {
+                ("detail needs 70x24  (i to close)".to_string(), dim_style())
+            } else {
+                (hint(app), dim_style())
+            }
+        }
     };
     frame.render_widget(Paragraph::new(Line::styled(text, style)), area);
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
-    let rect = centered_rect(64, 24, area);
+fn hint(app: &App) -> String {
+    let Some(card) = app.selected_card() else {
+        return "n new  ? help  q quit".to_string();
+    };
+    if card.id().is_some() {
+        if card.workspaces().is_empty() {
+            "s seat  n new  i detail  ? help".to_string()
+        } else if app.expanded.as_ref() == Some(&card.key) {
+            "enter open  d mark  space collapse  i detail  ? help".to_string()
+        } else {
+            "enter open  d mark  s seat  space expand  i detail  ? help".to_string()
+        }
+    } else {
+        "enter open  d mark  a assign  space expand  ? help".to_string()
+    }
+}
+
+fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let Some(card) = app.selected_card() else {
+        return vec![Line::styled("(no selection)", dim_style())];
+    };
+    let mut lines = Vec::new();
+    let mut hints = vec!["enter open", "d mark"];
+    if card.id().is_some() {
+        hints.push("s seat");
+    } else {
+        hints.push("a assign");
+    }
+    lines.push(Line::styled(
+        truncate(&hints.join("  "), width),
+        dim_style(),
+    ));
+
+    if let Some(id) = card.id() {
+        lines.push(Line::styled(
+            truncate(&format!("#{id}"), width),
+            dim_style(),
+        ));
+    }
+    lines.push(Line::styled(truncate(card.title(), width), title_style()));
+    if let Some(task) = &card.task {
+        let mut meta = Vec::new();
+        if task.created > 0 {
+            meta.push(format!("created {}", relative_age(app.now - task.created)));
+        }
+        if task.updated > 0 {
+            meta.push(format!("updated {}", relative_age(app.now - task.updated)));
+        }
+        if !meta.is_empty() {
+            lines.push(Line::styled(
+                truncate(&meta.join(" · "), width),
+                dim_style(),
+            ));
+        }
+        let notes = task.notes.trim();
+        if !notes.is_empty() {
+            lines.push(Line::styled("notes", dim_style()));
+            for line in wrap(notes, width, 4) {
+                lines.push(Line::styled(line, dim_style()));
+            }
+        }
+    }
+
+    let selected = app
+        .cursor
+        .child
+        .and_then(|index| card.workspaces().get(index));
+    let workspaces: Vec<&Workspace> = match selected {
+        Some(workspace) => vec![workspace],
+        None => card.workspaces().iter().collect(),
+    };
+    for workspace in workspaces {
+        let marker = if app.cursor.child.is_some() {
+            "▸ "
+        } else {
+            ""
+        };
+        lines.push(Line::styled(
+            truncate(&format!("{marker}{}", workspace.workspace), width),
+            title_style(),
+        ));
+        let state = if workspace.wait.is_some() {
+            "wait"
+        } else {
+            workspace.state.as_str()
+        };
+        let mut meta = vec![state.to_string()];
+        if workspace.hold != Hold::Idle {
+            meta.push(workspace.hold.as_str().to_string());
+        }
+        meta.push(relative_age(workspace.age));
+        lines.push(Line::styled(
+            truncate(&meta.join(" · "), width),
+            dim_style(),
+        ));
+        if !workspace.description.trim().is_empty() {
+            lines.push(Line::styled(
+                truncate(workspace.description.trim(), width),
+                dim_style(),
+            ));
+        }
+        if let Some(session) = &workspace.session {
+            if let Some(title) = session
+                .title
+                .as_deref()
+                .filter(|title| !title.trim().is_empty())
+            {
+                let age = session
+                    .updated
+                    .filter(|updated| *updated > 0)
+                    .map(|updated| format!(" {}", relative_age(app.now - updated)))
+                    .unwrap_or_default();
+                lines.push(Line::styled(
+                    truncate(&format!("session \"{title}\"{age}"), width),
+                    dim_style(),
+                ));
+            }
+        }
+        if let Some(wait) = &workspace.wait {
+            let reason = if wait.reason.trim().is_empty() {
+                "(no reason)"
+            } else {
+                wait.reason.trim()
+            };
+            lines.push(Line::styled(
+                truncate(
+                    &format!("wait: {reason}  {}", relative_age(wait.age)),
+                    width,
+                ),
+                dim_style(),
+            ));
+        }
+        if let Some(clean) = &workspace.clean {
+            lines.push(Line::styled(
+                truncate(&format!("clean {}", relative_age(clean.age)), width),
+                dim_style(),
+            ));
+        }
+        if !workspace.path.as_os_str().is_empty() {
+            lines.push(Line::styled(
+                truncate(&format!("path {}", workspace.path.display()), width),
+                dim_style(),
+            ));
+        }
+    }
+    lines
+}
+
+fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default().borders(Borders::ALL).title("detail");
+    let inner = block.inner(area);
+    let width = inner.width as usize;
+    let lines = detail_lines(app, width);
+    let visible = inner.height as usize;
+    let lines: Vec<Line> = lines.into_iter().take(visible).collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_help(frame: &mut Frame, area: Rect, help_scroll: &mut usize) {
+    let width = 64.min(area.width);
+    let height = 24.min(area.height).max(4);
+    let rect = centered_rect(width, height, area);
     frame.render_widget(Clear, rect);
-    let lines = vec![
-        Line::raw(""),
+    let lines = help_lines();
+    let inner_height = height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_height);
+    let scroll = (*help_scroll).min(max_scroll);
+    *help_scroll = scroll;
+    frame.render_widget(
+        Paragraph::new(lines)
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
+            .block(Block::default().borders(Borders::ALL).title("keys")),
+        rect,
+    );
+}
+
+fn help_lines() -> Vec<Line<'static>> {
+    vec![
         Line::raw("  enter   open the selected conversation's seat"),
         Line::raw("  d       mark the task (or this workspace) for cleanup"),
         Line::raw("  n       create a backlog task"),
@@ -289,19 +586,16 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::raw("  ctrl-u  half page up"),
         Line::raw("  pgdn    page down"),
         Line::raw("  pgup    page up"),
+        Line::raw("  i       toggle the detail pane"),
         Line::raw("  r       refresh now"),
         Line::raw("  ?       close this help"),
+        Line::raw("  esc     close the detail pane"),
         Line::raw("  q       quit"),
-        Line::raw(""),
         Line::styled(
             "  tasks group workspaces; lanes are derived, never stored",
-            Style::default().add_modifier(Modifier::DIM),
+            dim_style(),
         ),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("keys")),
-        rect,
-    );
+    ]
 }
 
 fn render_input(frame: &mut Frame, area: Rect, text: &str) {
@@ -309,7 +603,7 @@ fn render_input(frame: &mut Frame, area: Rect, text: &str) {
     frame.render_widget(Clear, rect);
     let line = Line::from(vec![
         Span::raw(text.to_string()),
-        Span::styled("▏", Style::default().add_modifier(Modifier::DIM)),
+        Span::styled("▏", dim_style()),
     ]);
     frame.render_widget(
         Paragraph::new(line).block(
@@ -327,10 +621,7 @@ fn render_assign(frame: &mut Frame, area: Rect, app: &App, workspace: &str, sele
     let rect = centered_rect(60, height, area);
     frame.render_widget(Clear, rect);
     let lines: Vec<Line> = if tasks.is_empty() {
-        vec![Line::styled(
-            "(no open tasks)",
-            Style::default().add_modifier(Modifier::DIM),
-        )]
+        vec![Line::styled("(no open tasks)", dim_style())]
     } else {
         let visible = height.saturating_sub(2) as usize;
         let offset = if selected >= visible {
@@ -386,6 +677,14 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     Rect::new(x, y, width, height)
+}
+
+fn title_style() -> Style {
+    Style::default().add_modifier(Modifier::BOLD)
+}
+
+fn dim_style() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
 }
 
 #[cfg(test)]
@@ -592,6 +891,33 @@ mod tests {
     }
 
     #[test]
+    fn golden_120x40_detail() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('i'));
+        assert_golden("board-120x40-detail.txt", &mut app, 120, 40);
+    }
+
+    #[test]
+    fn golden_160x50_detail() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('i'));
+        assert_golden("board-160x50-detail.txt", &mut app, 160, 50);
+    }
+
+    #[test]
+    fn golden_help_120x40() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('?'));
+        assert_golden("help-120x40.txt", &mut app, 120, 40);
+    }
+
+    #[test]
     fn too_small_40x12() {
         let mut app = App::new_at(golden_board(), NOW);
         assert_golden("too-small-40x12.txt", &mut app, 40, 12);
@@ -602,7 +928,25 @@ mod tests {
         let mut app = App::new_at(Board::default(), NOW);
         let text = render_text(&mut app, 100, 24);
         assert!(text.contains("0 cards"));
-        assert!(text.contains("(no tasks)"));
+        assert!(text.contains("No tasks yet."));
+    }
+
+    #[test]
+    fn load_error_keeps_the_board_and_offers_retry() {
+        let mut app = App::new_at(golden_board(), NOW);
+        app.set_load_error("boom");
+        let text = render_text(&mut app, 120, 40);
+        assert!(text.contains("! boom"));
+        assert!(text.contains("r retry"));
+        assert!(text.contains("Fix the board cache"));
+    }
+
+    #[test]
+    fn detail_needs_room_at_60x16() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('i'));
+        let text = render_text(&mut app, 60, 16);
+        assert!(text.contains("detail needs 70x24"));
     }
 
     #[test]
@@ -613,6 +957,17 @@ mod tests {
         assert!(text.contains("open the selected conversation's seat"));
         assert!(text.contains("lanes are derived, never stored"));
         assert!(text.contains("expand or collapse the selected card"));
+    }
+
+    #[test]
+    fn help_scrolls_on_a_short_terminal() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('?'));
+        let top = render_text(&mut app, 60, 16);
+        assert!(top.contains("enter"));
+        press(&mut app, KeyCode::PageDown);
+        let bottom = render_text(&mut app, 60, 16);
+        assert!(bottom.contains("quit"));
     }
 
     #[test]
