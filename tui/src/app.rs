@@ -5,8 +5,6 @@ use crate::view::{self, CardKey, LaneModel};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rookery_core::util::now_secs;
 
-pub const HINTS: &str = "enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -73,6 +71,10 @@ pub struct App {
     pub status: String,
     pub error: bool,
     pub now: i64,
+    pub loaded_at: i64,
+    pub clock: i64,
+    pub detail: bool,
+    pub help_scroll: usize,
     pub scroll: [ScrollState; 5],
     pub viewports: [usize; 5],
     pub content_heights: [usize; 5],
@@ -93,6 +95,8 @@ impl App {
             board,
             lanes,
             now,
+            loaded_at: now,
+            clock: now,
             reveal: true,
             ..Self::default()
         };
@@ -113,6 +117,8 @@ impl App {
         self.lanes = view::build(&board);
         self.board = board;
         self.now = now;
+        self.loaded_at = now;
+        self.clock = now;
         if self.load_error {
             self.status.clear();
             self.error = false;
@@ -128,6 +134,14 @@ impl App {
             self.cursor.child = None;
         }
         self.reveal = !found || self.cursor != previous;
+    }
+
+    pub fn tick(&mut self, now: i64) {
+        self.clock = now;
+    }
+
+    pub fn has_load_error(&self) -> bool {
+        self.load_error
     }
 
     pub fn set_status(&mut self, status: impl Into<String>) {
@@ -208,7 +222,20 @@ impl App {
         match key.code {
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Char('?') => {
+                self.help_scroll = 0;
                 self.mode = Mode::Help;
+                None
+            }
+            KeyCode::Char('i') => {
+                self.detail = !self.detail;
+                self.reveal = true;
+                None
+            }
+            KeyCode::Esc => {
+                if self.detail {
+                    self.detail = false;
+                    self.reveal = true;
+                }
                 None
             }
             KeyCode::Char('r') => Some(Action::Refresh),
@@ -287,7 +314,29 @@ impl App {
     fn handle_modal(&mut self, key: KeyEvent) -> Option<Action> {
         let mode = std::mem::take(&mut self.mode);
         match mode {
-            Mode::Help => None,
+            Mode::Help => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.help_scroll += 1;
+                    self.mode = Mode::Help;
+                    None
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                    self.mode = Mode::Help;
+                    None
+                }
+                KeyCode::PageDown => {
+                    self.help_scroll += 10;
+                    self.mode = Mode::Help;
+                    None
+                }
+                KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(10);
+                    self.mode = Mode::Help;
+                    None
+                }
+                _ => None,
+            },
             Mode::TaskInput { mut text } => match key.code {
                 KeyCode::Esc => None,
                 KeyCode::Enter => {
@@ -948,6 +997,27 @@ mod tests {
         assert_eq!(app.cursor.lane, 0);
         press(&mut app, KeyCode::Char('3'));
         assert_eq!(app.cursor.lane, 2);
+    }
+
+    #[test]
+    fn i_toggles_the_detail_pane_and_esc_closes_it() {
+        let mut app = App::new_at(board(), NOW);
+        assert!(!app.detail);
+        press(&mut app, KeyCode::Char('i'));
+        assert!(app.detail);
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.detail);
+    }
+
+    #[test]
+    fn help_scrolls_and_closes() {
+        let mut app = App::new_at(board(), NOW);
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.mode, Mode::Help);
+        assert_eq!(app.help_scroll, 1);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]

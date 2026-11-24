@@ -1,4 +1,4 @@
-rookery board   6 cards   6 workspaces
+rookery board  6 cards  6 workspaces   refreshed 0s
  Backlog 1  [Active 2]  Review 1   Blocked 1   To Clean 1
 Active 2 · 3ws
 ╭──────────────────────────────────────────────────────────────────────────────╮
@@ -21,4 +21,4 @@ Active 2 · 3ws
 
 
 
-enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit
+enter open  d mark  space collapse  i detail  ? help
