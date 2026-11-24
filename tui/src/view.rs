@@ -247,6 +247,7 @@ impl Card {
         &self,
         width: usize,
         selected: bool,
+        expanded: bool,
         child: Option<usize>,
         now: i64,
     ) -> Vec<Line<'static>> {
@@ -260,7 +261,7 @@ impl Card {
         } else {
             base_border()
         };
-        let content = self.content_lines(inner, selected, child, now);
+        let content = self.content_lines(inner, expanded, child, now);
         let mut lines = Vec::with_capacity(content.len() + 2);
         lines.push(border_line("╭", "╮", inner, accent, border));
         lines.extend(
@@ -272,12 +273,13 @@ impl Card {
         lines
     }
 
-    /// A borderless card for narrow terminals: one title line with a state
-    /// stripe, and the selected card's workspaces underneath.
+    /// A borderless card for narrow terminals: a state stripe, the title and
+    /// aggregate badges, and the expanded card's workspaces underneath.
     pub fn compact_lines(
         &self,
         width: usize,
         selected: bool,
+        expanded: bool,
         child: Option<usize>,
         _now: i64,
     ) -> Vec<Line<'static>> {
@@ -306,20 +308,22 @@ impl Card {
             Span::raw(" "),
             Span::styled(truncate(&format!("{title}{count}"), available), style),
         ])];
-        if selected {
+        let mut detail = self.badges(available).unwrap_or_default();
+        if let Some(context) = self.context() {
+            if !detail.is_empty() {
+                detail.push_str(" · ");
+            }
+            detail.push_str(&context);
+        }
+        if !detail.is_empty() {
+            lines.push(Line::styled(
+                truncate(&format!("  {detail}"), width),
+                dim_style(),
+            ));
+        }
+        if expanded {
             for (index, workspace) in self.workspaces().iter().enumerate() {
-                let state = if workspace.wait.is_some() {
-                    "wait"
-                } else {
-                    workspace.state.as_str()
-                };
-                let text = truncate(&format!("  {state} {}", workspace.workspace), width);
-                let style = if child == Some(index) {
-                    reverse_style()
-                } else {
-                    dim_style()
-                };
-                lines.push(Line::styled(text, style));
+                lines.extend(child_lines(workspace, index, child, width));
             }
         }
         lines
@@ -328,7 +332,7 @@ impl Card {
     fn content_lines(
         &self,
         inner: usize,
-        selected: bool,
+        expanded: bool,
         child: Option<usize>,
         now: i64,
     ) -> Vec<Line<'static>> {
@@ -387,7 +391,7 @@ impl Card {
             content.push(Line::styled(truncate(&context, inner), dim_style()));
         }
 
-        if selected {
+        if expanded {
             for (index, workspace) in self.workspaces().iter().enumerate() {
                 content.extend(child_lines(workspace, index, child, inner));
             }
