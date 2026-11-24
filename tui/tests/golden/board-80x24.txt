@@ -1,0 +1,24 @@
+rookery board   6 cards   6 workspaces
+ Backlog 1  [Active 2]  Review 1   Blocked 1   To Clean 1
+Active 2 · 3ws
+╭──────────────────────────────────────────────────────────────────────────────╮
+│Fix the board cache                                                          2│
+│#cache · updated 2h                                                           │
+│1 unpushed · 1 merged                                                         │
+│1 live                                                                        │
+│▸ ws-cache-fix merged live 4h                                                 │
+│▸ ws-cache-test unpushed 2h                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│Loose experiment                                                              │
+│updated 1h                                                                    │
+│1 unpushed                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+enter open  d done  n new  s seat  a assign  r refresh  ? help  q quit

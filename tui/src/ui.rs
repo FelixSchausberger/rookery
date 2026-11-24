@@ -1,29 +1,45 @@
-// Rendering only: the five derived lanes as cards, the lane headers, the
-// status line, and the modal prompts.
+// Rendering only: the five derived lanes as cards, the focused lane and its
+// bar on narrow terminals, the status line, and the modal prompts.
 use crate::app::{App, HINTS, Mode};
-use crate::view::{LaneModel, truncate};
+use crate::model::Lane;
+use crate::view::truncate;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < 50 || area.height < 12 {
         render_too_small(frame, area);
         return;
     }
-    let chunks = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .split(area);
-
-    render_title(frame, chunks[0], app);
-    render_lanes(frame, chunks[1], app);
-    render_footer(frame, chunks[2], app);
+    if area.width >= 110 {
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
+        render_title(frame, chunks[0], app);
+        render_lanes(frame, chunks[1], app, true);
+        render_footer(frame, chunks[2], app);
+    } else {
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
+        render_title(frame, chunks[0], app);
+        render_lane_bar(frame, chunks[1], app);
+        render_lanes(frame, chunks[2], app, false);
+        render_footer(frame, chunks[3], app);
+    }
 
     match &app.mode {
         Mode::Help => render_help(frame, area),
@@ -54,64 +70,138 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn render_lanes(frame: &mut Frame, area: Rect, app: &App) {
-    let wide = area.width >= 110;
-    let columns = Layout::horizontal([Constraint::Ratio(1, 5); 5])
-        .spacing(1)
-        .split(area);
+fn render_lane_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let full = area.width >= 70;
+    let mut spans = Vec::new();
     for (index, lane) in app.lanes.iter().enumerate() {
-        render_lane(frame, columns[index], app, lane, index, wide);
+        let label = if full {
+            format!("{} {}", lane.lane.title(), lane.cards.len())
+        } else {
+            format!("{}{}", short_lane(lane.lane), lane.cards.len())
+        };
+        let text = if index == app.cursor.lane {
+            format!("[{label}]")
+        } else {
+            format!(" {label} ")
+        };
+        let style = if index == app.cursor.lane {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        };
+        spans.push(Span::styled(text, style));
+        if index + 1 < app.lanes.len() {
+            spans.push(Span::raw(" "));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn short_lane(lane: Lane) -> &'static str {
+    match lane {
+        Lane::Backlog => "B",
+        Lane::Active => "A",
+        Lane::Review => "R",
+        Lane::Blocked => "X",
+        Lane::ToClean => "C",
     }
 }
 
-fn render_lane(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    lane: &LaneModel,
-    index: usize,
-    wide: bool,
-) {
+fn render_lanes(frame: &mut Frame, area: Rect, app: &mut App, wide_terminal: bool) {
+    if wide_terminal {
+        let columns = Layout::horizontal([Constraint::Ratio(1, 5); 5])
+            .spacing(1)
+            .split(area);
+        for index in 0..app.lanes.len() {
+            render_lane(frame, columns[index], app, index, true);
+        }
+    } else {
+        let index = app.cursor.lane;
+        let card_wide = area.width >= 70;
+        render_lane(frame, area, app, index, card_wide);
+    }
+}
+
+fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide: bool) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let selected = app.cursor.lane == index;
-    let workspaces: usize = lane.cards.iter().map(|card| card.workspaces().len()).sum();
-    let label = truncate(
-        &format!(
-            "{} {} · {}ws",
-            lane.lane.title(),
-            lane.cards.len(),
-            workspaces
-        ),
-        area.width as usize,
-    );
+    let label = {
+        let lane = &app.lanes[index];
+        let workspaces: usize = lane.cards.iter().map(|card| card.workspaces().len()).sum();
+        truncate(
+            &format!(
+                "{} {} · {}ws",
+                lane.lane.title(),
+                lane.cards.len(),
+                workspaces
+            ),
+            area.width as usize,
+        )
+    };
     let mut header_style = Style::default().add_modifier(Modifier::BOLD);
     if selected {
         header_style = header_style.add_modifier(Modifier::REVERSED);
     }
     frame.render_widget(Paragraph::new(Line::styled(label, header_style)), rows[0]);
 
-    let (lines, cursor) = lane_lines(app, lane, index, rows[1].width, wide);
     let height = rows[1].height as usize;
-    let scroll = match cursor {
-        Some((start, end)) if height > 0 && end - start >= height => start,
-        Some((_, end)) if height > 0 && end > height => end - height,
-        _ => 0,
+    let full_width = rows[1].width as usize;
+    let (mut lines, mut cursor) = lane_lines(app, index, full_width as u16, wide);
+    let mut scrollbar = lines.len() > height && full_width > 1;
+    if scrollbar {
+        let (narrow_lines, narrow_cursor) = lane_lines(app, index, (full_width - 1) as u16, wide);
+        lines = narrow_lines;
+        cursor = narrow_cursor;
+        scrollbar = lines.len() > height;
+    }
+    let content = lines.len();
+    let body_width = if scrollbar {
+        full_width - 1
+    } else {
+        full_width
     };
+    let body = Rect::new(rows[1].x, rows[1].y, body_width as u16, rows[1].height);
+    let max_offset = content.saturating_sub(height);
+    let mut offset = app.scroll[index].offset.min(max_offset);
+    let cursor_lane = app.cursor.lane == index;
+    let viewport_changed = app.viewports[index] != height;
+    if cursor_lane && (app.reveal || viewport_changed) {
+        offset = reveal(offset, cursor, height, content);
+    }
+    app.scroll[index].offset = offset;
+    app.viewports[index] = height;
+    app.content_heights[index] = content;
     frame.render_widget(
-        Paragraph::new(lines).scroll((scroll.min(u16::MAX as usize) as u16, 0)),
-        rows[1],
+        Paragraph::new(lines).scroll((offset.min(u16::MAX as usize) as u16, 0)),
+        body,
     );
+    if scrollbar {
+        let mut state = ScrollbarState::new(content)
+            .position(offset)
+            .viewport_content_length(height);
+        let scroll_area = Rect::new(body.right(), body.y, 1, body.height);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(Color::DarkGray)),
+            scroll_area,
+            &mut state,
+        );
+    }
+    if cursor_lane {
+        app.reveal = false;
+    }
 }
 
-/// Build the visible rows of one lane. The selected card is expanded, so the
-/// cursor range covers its full card and the lane scrolls by lines, not cards.
+/// Build one lane's lines. The selected card's range is returned for the
+/// reveal calculation; expanded cards contribute their workspace rows even
+/// when they are not selected.
 fn lane_lines(
     app: &App,
-    lane: &LaneModel,
     index: usize,
     width: u16,
     wide: bool,
 ) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+    let lane = &app.lanes[index];
     if lane.cards.is_empty() {
         return (
             vec![Line::styled(
@@ -125,12 +215,13 @@ fn lane_lines(
     let mut cursor = None;
     for (card_index, card) in lane.cards.iter().enumerate() {
         let selected = app.cursor.lane == index && app.cursor.card == card_index;
-        let start = lines.len();
+        let expanded = app.expanded.as_ref() == Some(&card.key);
         let child = if selected { app.cursor.child } else { None };
+        let start = lines.len();
         let card_lines = if wide {
-            card.lines(width as usize, selected, child, app.now)
+            card.lines(width as usize, selected, expanded, child, app.now)
         } else {
-            card.compact_lines(width as usize, selected, child, app.now)
+            card.compact_lines(width as usize, selected, expanded, child, app.now)
         };
         lines.extend(card_lines);
         if selected {
@@ -138,6 +229,24 @@ fn lane_lines(
         }
     }
     (lines, cursor)
+}
+
+fn reveal(offset: usize, range: Option<(usize, usize)>, viewport: usize, content: usize) -> usize {
+    let max_offset = content.saturating_sub(viewport);
+    let mut offset = offset.min(max_offset);
+    if viewport == 0 {
+        return 0;
+    }
+    if let Some((start, end)) = range {
+        if end - start >= viewport {
+            offset = start.min(max_offset);
+        } else if start < offset {
+            offset = start;
+        } else if end > offset + viewport {
+            offset = end - viewport;
+        }
+    }
+    offset.min(max_offset)
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -160,7 +269,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_help(frame: &mut Frame, area: Rect) {
-    let rect = centered_rect(64, 18, area);
+    let rect = centered_rect(64, 24, area);
     frame.render_widget(Clear, rect);
     let lines = vec![
         Line::raw(""),
@@ -169,8 +278,17 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::raw("  n       create a backlog task"),
         Line::raw("  s       start a seat for the task"),
         Line::raw("  a       assign the selected ungrouped workspace"),
+        Line::raw("  space   expand or collapse the selected card"),
         Line::raw("  j k     move within a lane"),
         Line::raw("  h l     move between lanes"),
+        Line::raw("  tab     cycle lanes"),
+        Line::raw("  1-5     jump to a lane"),
+        Line::raw("  g g     first card"),
+        Line::raw("  G       last card"),
+        Line::raw("  ctrl-d  half page down"),
+        Line::raw("  ctrl-u  half page up"),
+        Line::raw("  pgdn    page down"),
+        Line::raw("  pgup    page up"),
         Line::raw("  r       refresh now"),
         Line::raw("  ?       close this help"),
         Line::raw("  q       quit"),
@@ -379,11 +497,28 @@ mod tests {
         Board { workspaces, tasks }
     }
 
+    fn many_backlog_board(count: usize) -> Board {
+        let tasks = (0..count)
+            .map(|index| Task {
+                id: format!("task-{index}"),
+                title: format!("Task {index:02}"),
+                status: "open".into(),
+                created: NOW,
+                updated: NOW,
+                ..Task::default()
+            })
+            .collect();
+        Board {
+            workspaces: Vec::new(),
+            tasks,
+        }
+    }
+
     fn press(app: &mut App, code: KeyCode) {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
-    fn render_text(app: &App, width: u16, height: u16) -> String {
+    fn render_text(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| super::render(frame, app)).unwrap();
@@ -407,7 +542,7 @@ mod tests {
             .join(name)
     }
 
-    fn assert_golden(name: &str, app: &App, width: u16, height: u16) {
+    fn assert_golden(name: &str, app: &mut App, width: u16, height: u16) {
         let actual = render_text(app, width, height);
         let path = golden_path(name);
         if std::env::var_os("UPDATE_GOLDEN").is_some() {
@@ -427,7 +562,8 @@ mod tests {
     fn golden_120x40() {
         let mut app = App::new_at(golden_board(), NOW);
         press(&mut app, KeyCode::Char('l'));
-        assert_golden("board-120x40.txt", &app, 120, 40);
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-120x40.txt", &mut app, 120, 40);
     }
 
     #[test]
@@ -435,19 +571,36 @@ mod tests {
         let mut app = App::new_at(golden_board(), NOW);
         press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char('l'));
-        assert_golden("board-160x50.txt", &app, 160, 50);
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-160x50.txt", &mut app, 160, 50);
+    }
+
+    #[test]
+    fn golden_80x24() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-80x24.txt", &mut app, 80, 24);
+    }
+
+    #[test]
+    fn golden_60x16() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-60x16.txt", &mut app, 60, 16);
     }
 
     #[test]
     fn too_small_40x12() {
-        let app = App::new_at(golden_board(), NOW);
-        assert_golden("too-small-40x12.txt", &app, 40, 12);
+        let mut app = App::new_at(golden_board(), NOW);
+        assert_golden("too-small-40x12.txt", &mut app, 40, 12);
     }
 
     #[test]
     fn empty_board() {
-        let app = App::new_at(Board::default(), NOW);
-        let text = render_text(&app, 100, 24);
+        let mut app = App::new_at(Board::default(), NOW);
+        let text = render_text(&mut app, 100, 24);
         assert!(text.contains("0 cards"));
         assert!(text.contains("(no tasks)"));
     }
@@ -456,8 +609,41 @@ mod tests {
     fn help_overlay() {
         let mut app = App::new_at(golden_board(), NOW);
         press(&mut app, KeyCode::Char('?'));
-        let text = render_text(&app, 100, 24);
+        let text = render_text(&mut app, 100, 24);
         assert!(text.contains("open the selected conversation's seat"));
         assert!(text.contains("lanes are derived, never stored"));
+        assert!(text.contains("expand or collapse the selected card"));
+    }
+
+    #[test]
+    fn scroll_reveals_the_selected_card() {
+        let mut app = App::new_at(many_backlog_board(30), NOW);
+        let first = render_text(&mut app, 60, 16);
+        assert!(first.contains("Task 00"));
+
+        press(&mut app, KeyCode::Char('G'));
+        let last = render_text(&mut app, 60, 16);
+        assert!(last.contains("Task 29"));
+        assert!(!last.contains("Task 00"));
+
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Char('g'));
+        let first_again = render_text(&mut app, 60, 16);
+        assert!(first_again.contains("Task 00"));
+    }
+
+    #[test]
+    fn manual_scroll_keeps_the_cursor_and_j_returns() {
+        let mut app = App::new_at(many_backlog_board(30), NOW);
+        render_text(&mut app, 60, 16);
+        press(&mut app, KeyCode::PageDown);
+        let scrolled = render_text(&mut app, 60, 16);
+        assert_ne!(app.scroll[0].offset, 0);
+        assert!(!scrolled.contains("Task 00"));
+        assert_eq!(app.cursor.card, 0);
+
+        press(&mut app, KeyCode::Char('j'));
+        let after = render_text(&mut app, 60, 16);
+        assert!(after.contains("Task 01"));
     }
 }

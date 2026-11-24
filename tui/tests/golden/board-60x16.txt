@@ -1,0 +1,16 @@
+rookery board   6 cards   6 workspaces
+ B1  [A2]  R1   X1   C1
+Active 2 · 3ws
+▌ Fix the board cache (2)
+  1 unpushed · 1 merged · 1 live
+▸ ws-cache-fix merged live 4h
+▸ ws-cache-test unpushed 2h
+▌ Loose experiment
+  1 unpushed
+
+
+
+
+
+
+enter open  d done  n new  s seat  a assign  r refresh  ? he
