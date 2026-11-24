@@ -28,18 +28,71 @@
         pkgs,
         ...
       }: let
-        rookery = pkgs.callPackage ./packages/rookery.nix {};
+        rookeryLegacy = pkgs.callPackage ./packages/rookery.nix {};
+        workspaceToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+        runtimeDeps = with pkgs; [
+          jujutsu
+          coreutils
+          direnv
+          gnugrep
+          gnused
+          findutils
+          rip2
+          zellij
+          jq
+          sqlite
+          util-linux
+          bash
+        ];
+        testDeps = [
+          pkgs.jujutsu
+          pkgs.git
+          pkgs.sqlite
+          pkgs.jq
+          pkgs.util-linux
+          pkgs.gnugrep
+          pkgs.gnused
+          pkgs.coreutils
+          pkgs.bash
+        ];
+        workspaceSrc = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: _: let
+            base = baseNameOf path;
+          in
+            !(builtins.elem base ["target" "result" ".direnv" ".jj"])
+            && !(pkgs.lib.hasPrefix "result-" base);
+        };
+        rookeryRs = pkgs.rustPlatform.buildRustPackage {
+          pname = "rookery";
+          version = workspaceToml.workspace.package.version;
+          src = workspaceSrc;
+          cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = ["--package" "rookery-cli" "--bin" "rookery"];
+          cargoTestFlags = ["--package" "rookery-core" "--package" "rookery-cli"];
+          nativeBuildInputs = [pkgs.makeWrapper];
+          postInstall = ''
+            wrapProgram $out/bin/rookery --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+            ln -s rookery $out/bin/ocws
+          '';
+          meta = {
+            description = "A rookery of jj workspaces for coding agents";
+            homepage = "https://github.com/FelixSchausberger/rookery";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "rookery";
+          };
+        };
         rookeryTui = pkgs.rustPlatform.buildRustPackage {
           pname = "rookery-tui";
-          version = "0.4.0";
-          src = pkgs.lib.cleanSourceWith {
-            src = ./tui;
-            filter = path: _: let
-              base = baseNameOf path;
-            in
-              base != "target" && base != "result";
-          };
-          cargoLock.lockFile = ./tui/Cargo.lock;
+          version = workspaceToml.workspace.package.version;
+          src = workspaceSrc;
+          cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = ["--package" "rookery-tui" "--bin" "rookery-tui"];
+          cargoTestFlags = ["--package" "rookery-tui"];
+          nativeBuildInputs = [pkgs.makeWrapper];
+          postInstall = ''
+            wrapProgram $out/bin/rookery-tui --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps}
+          '';
           meta = {
             description = "The Rookery board: tasks and their conversations";
             homepage = "https://github.com/FelixSchausberger/rookery";
@@ -48,13 +101,13 @@
           };
         };
       in {
-        packages.rookery = rookery;
+        packages.rookery = rookeryRs;
+        packages.rookery-legacy = rookeryLegacy;
         packages.rookery-tui = rookeryTui;
-        packages.default = rookery;
+        packages.default = rookeryRs;
 
-        # The TUI is a client of the CLI contract; the check builds the crate
-        # and runs its tests (lane derivation, key handling, CLI argv, and the
-        # TestBackend snapshots) in the sandbox.
+        # The TUI links rookery-core; the check builds the workspace member and
+        # runs its key-handling and TestBackend snapshot tests in the sandbox.
         checks.rookery-tui = rookeryTui;
 
         # The board's classification, cache key and freshness rules against a
@@ -63,12 +116,7 @@
         # session and wait state that must never come from the cache.
         checks.rookery-board =
           pkgs.runCommand "rookery-board-test" {
-            nativeBuildInputs = [
-              rookery
-              pkgs.jujutsu
-              pkgs.git
-              pkgs.sqlite
-            ];
+            nativeBuildInputs = [rookeryRs] ++ testDeps;
           } ''
             cp ${./tests/board.sh} board.sh
             chmod +x board.sh
@@ -76,24 +124,9 @@
             touch $out
           '';
 
-        # The task layer against a fixture repository and a fake herdr: NDJSON
-        # board, store writes and maintenance across rename/removal, cleanup
-        # marks and the sweep, seat focus and task seats, and corruption
-        # handling. Nothing touches the real base or cache.
         checks.rookery-tasks =
           pkgs.runCommand "rookery-tasks-test" {
-            nativeBuildInputs = [
-              rookery
-              pkgs.jujutsu
-              pkgs.git
-              pkgs.sqlite
-              pkgs.jq
-              pkgs.util-linux
-              pkgs.gnugrep
-              pkgs.gnused
-              pkgs.coreutils
-              pkgs.bash
-            ];
+            nativeBuildInputs = [rookeryRs] ++ testDeps;
           } ''
             cp ${./tests/tasks.sh} tasks.sh
             chmod +x tasks.sh
@@ -101,10 +134,22 @@
             touch $out
           '';
 
+        checks.rookery-parity =
+          pkgs.runCommand "rookery-parity-test" {
+            nativeBuildInputs = [rookeryLegacy rookeryRs] ++ testDeps;
+          } ''
+            cp ${./tests/parity.sh} parity.sh
+            chmod +x parity.sh
+            ROOKERY_ORACLE=${rookeryLegacy}/bin/rookery \
+              ROOKERY_CANDIDATE=${rookeryRs}/bin/rookery \
+              bash parity.sh
+            touch $out
+          '';
+
         devShells.default = pkgs.mkShell {
           inputsFrom = [config.treefmt.build.devShell];
           packages = [
-            rookery
+            rookeryRs
             pkgs.jujutsu
             pkgs.git
             pkgs.sqlite

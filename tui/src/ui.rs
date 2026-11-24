@@ -124,13 +124,9 @@ fn lane_lines(app: &App, lane: &LaneView, index: usize) -> (Vec<Line<'static>>, 
             let state = if workspace.wait.is_some() {
                 "wait".to_string()
             } else {
-                workspace.state.clone()
+                workspace.state.as_str().to_string()
             };
-            let hold = if workspace.hold.is_empty() {
-                "-".to_string()
-            } else {
-                workspace.hold.clone()
-            };
+            let hold = workspace.hold.as_str().to_string();
             let selected_child = app.cursor.child == Some(child_index);
             let name_style = if selected_child {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -269,15 +265,19 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
-    use crate::model::{Board, Clean, Task, Workspace};
+    use crate::model::{Board, Clean, Hold, State, Task, Workspace};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
     fn workspace(name: &str, state: &str, hold: &str) -> Workspace {
         Workspace {
             workspace: name.to_string(),
-            state: state.to_string(),
-            hold: hold.to_string(),
+            state: State::parse(state).unwrap_or_default(),
+            hold: match hold {
+                "live" => Hold::Live,
+                "session" => Hold::Session,
+                _ => Hold::Idle,
+            },
             ..Workspace::default()
         }
     }

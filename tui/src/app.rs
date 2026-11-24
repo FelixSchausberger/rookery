@@ -18,31 +18,6 @@ pub enum Action {
 }
 
 impl Action {
-    /// The exact argv for the CLI. None for the in-process actions.
-    pub fn args(&self) -> Option<Vec<String>> {
-        Some(match self {
-            Action::Quit | Action::Refresh => return None,
-            Action::Open(target) => vec!["open".into(), target.clone()],
-            Action::MarkTask(id) => vec!["task".into(), "done".into(), id.clone()],
-            Action::MarkWorkspace(workspace) => vec!["clean".into(), workspace.clone()],
-            Action::StartSeat(id) => vec![
-                "herdr".into(),
-                "--task".into(),
-                id.clone(),
-                "--no-focus".into(),
-            ],
-            Action::AddTask(title) => vec!["task".into(), "add".into(), title.clone()],
-            Action::AssignTask { task, workspace } => {
-                vec![
-                    "task".into(),
-                    "assign".into(),
-                    task.clone(),
-                    workspace.clone(),
-                ]
-            }
-        })
-    }
-
     pub fn label(&self) -> Option<&'static str> {
         match self {
             Action::Quit | Action::Refresh => None,
@@ -411,13 +386,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Clean, Lane, Wait};
+    use crate::model::{Clean, Hold, Lane, State, Wait};
 
     fn ws(name: &str, state: &str, hold: &str) -> Workspace {
         Workspace {
             workspace: name.to_string(),
-            state: state.to_string(),
-            hold: hold.to_string(),
+            state: State::parse(state).unwrap_or_default(),
+            hold: match hold {
+                "live" => Hold::Live,
+                "session" => Hold::Session,
+                _ => Hold::Idle,
+            },
             ..Workspace::default()
         }
     }
@@ -438,7 +417,7 @@ mod tests {
         let mut child = ws("ws-active-2", "merged", "-");
         child.task = Some("active".into());
         let mut loose = ws("ws-loose", "unpushed", "-");
-        loose.description = Some("Loose work".into());
+        loose.description = "Loose work".into();
         let mut marked = ws("ws-clean", "merged", "-");
         marked.task = Some("cleanup".into());
         marked.clean = Some(Clean::default());
@@ -458,50 +437,6 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) -> Option<Action> {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
-    }
-
-    #[test]
-    fn actions_map_to_exact_argv() {
-        assert_eq!(
-            Action::Open("ws".into()).args(),
-            Some(vec!["open".into(), "ws".into()])
-        );
-        assert_eq!(
-            Action::MarkTask("t".into()).args(),
-            Some(vec!["task".into(), "done".into(), "t".into()])
-        );
-        assert_eq!(
-            Action::MarkWorkspace("ws".into()).args(),
-            Some(vec!["clean".into(), "ws".into()])
-        );
-        assert_eq!(
-            Action::StartSeat("t".into()).args(),
-            Some(vec![
-                "herdr".into(),
-                "--task".into(),
-                "t".into(),
-                "--no-focus".into()
-            ])
-        );
-        assert_eq!(
-            Action::AddTask("Fix board".into()).args(),
-            Some(vec!["task".into(), "add".into(), "Fix board".into()])
-        );
-        assert_eq!(
-            Action::AssignTask {
-                task: "t".into(),
-                workspace: "ws".into()
-            }
-            .args(),
-            Some(vec![
-                "task".into(),
-                "assign".into(),
-                "t".into(),
-                "ws".into()
-            ])
-        );
-        assert_eq!(Action::Quit.args(), None);
-        assert_eq!(Action::Refresh.args(), None);
     }
 
     #[test]

@@ -18,10 +18,10 @@ Manager module.
 
 ## Requirements
 
-- Linux (the liveness probe reads `/proc`), bash, git
+- Linux (the liveness probe reads `/proc`), bash for hooks and the agent
+  launch, git
 - jj 0.38 or newer (`rookery` uses the `root` field of `jj workspace list`)
-- sqlite3 for the OpenCode session probe; without it, liveness falls back to
-  processes and timestamps
+- direnv for the `.envrc` approval on a new workspace
 - herdr and OpenCode for `rookery herdr`, `rookery seat`, and `rookery title`
 
 ## Install
@@ -56,8 +56,9 @@ pre-rename `ocws`, which carries the options as environment defaults. A runtime
 `ROOKERY_*` variable still wins. `OCWS_*` is read as a fallback when the new
 name is unset.
 
-Without Nix, run the package definition with `nix build` or copy
-`packages/rookery.nix` and its runtime dependencies.
+Without Nix, build the workspace with `cargo build --release -p rookery-cli`
+and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
+`rookery-legacy` for one release; the module installs only the Rust CLI.
 
 ## Commands
 
@@ -146,9 +147,11 @@ selected task's conversations expanded underneath it.
   cleanup, `n` creates a backlog task, `s` starts a seat for the task, `a`
   assigns an ungrouped workspace, `h/j/k/l` move, `r` refreshes, `?` opens the
   key help, and `q` quits.
-- It reads `ls --json` and `task list --json` and writes only through the CLI
-  (`open`, `task add|assign|done`, `clean`, `herdr --task`). It never reads the
-  task store, the jj store, or the base, and it never calls herdr directly.
+- It uses `rookery-core` in process: the same board read model and the same
+  actions as the CLI. It never reads the task store, the jj store, or the base
+  itself, and it never calls herdr or jj directly.
+- The CLI's `ls --json` and `task list --json` remain the public NDJSON
+  contract for other clients.
 - The board refreshes every two seconds and after every action. A failed call
   keeps the last board and reports the error on the status line.
 
@@ -228,10 +231,11 @@ nix fmt
 nix flake check
 nix build .#rookery
 nix build .#rookery-tui
+nix build .#rookery-legacy
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 bash tests/board.sh
 bash tests/tasks.sh
-cargo test --manifest-path tui/Cargo.toml
-cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
 ```
 
 `tests/board.sh` builds a throwaway jj repository with a local git origin and
@@ -244,9 +248,10 @@ herdr: the NDJSON board, store writes and concurrent writers, maintenance across
 rename and removal, cleanup marks and the sweep, seat focus, task seats, and
 corrupt-store handling.
 
-The TUI crate has its own unit tests for lane derivation, key handling, CLI
-argv, and `TestBackend` buffer snapshots; `checks.rookery-tui` runs them in the
-Nix sandbox.
+The workspace tests cover classification, the cache key, absorption, the task
+store's atomicity, the lifecycle safety checks, lane derivation, key handling,
+and the `TestBackend` buffer snapshots. `checks.rookery-parity` runs the same
+fixture against the v0.4.0 shell and the Rust CLI.
 
 ## License
 
