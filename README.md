@@ -180,7 +180,8 @@ expands in place with one row per workspace.
 - Keys: `h`/`l` and `Tab`/`Shift-Tab` switch lanes, `1`-`5` jump to a lane,
   `j`/`k` move between cards, `Space` expands or collapses a card, `Enter`
   opens the selected task or workspace seat, `d` marks the task or workspace
-  for cleanup, `s` starts a seat for the task, `n` creates a backlog task, `a`
+  for cleanup, `s` starts a seat for a task with no workspace, `n` creates a
+  backlog task, `a`
   assigns an ungrouped workspace, `gg`/`G` jump to the first or last card,
   `Ctrl-d`/`Ctrl-u` scroll half a page, `PgDn`/`PgUp` scroll a page, `i` toggles
   the detail pane, `/` filters live, `f` cycles the filter presets, `o` cycles

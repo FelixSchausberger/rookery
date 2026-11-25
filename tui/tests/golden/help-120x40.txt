@@ -10,7 +10,7 @@ Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Bloc
                         │Loo│  enter   open the selected conversation's seat               │
                         │upd│  d       mark the task (or this workspace) for cleanup       │
                         │1 u│  n       create a backlog task                               │
-                        ╰───│  s       start a seat for the task                           │
+                        ╰───│  s       start a seat for a task with no workspace           │
                             │  a       assign the selected ungrouped workspace             │
                             │  /       filter cards                                        │
                             │  f       cycle filter presets                                │
