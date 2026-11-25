@@ -144,6 +144,7 @@ json_ok "$tasks"
 [ "$(printf '%s\n' "$tasks" | jq -s 'length')" -eq 2 ] || fail "duplicate title did not suffix: $tasks"
 printf '%s\n' "$tasks" | jq -e 'select(.id == "board-task" and .status == "open" and (.workspaces | length) == 0)' >/dev/null 2>&1 || fail "board-task shape is wrong: $tasks"
 printf '%s\n' "$tasks" | jq -e 'select(.id == "board-task-2")' >/dev/null 2>&1 || fail "second id is not suffixed: $tasks"
+[ "$(jq -r '.version' "$ROOKERY_BASE/tasks.json")" = "2" ] || fail "store version was not upgraded"
 [ "$(jq -r '.tasks | length' "$ROOKERY_BASE/tasks.json")" -eq 2 ] || fail "store document is not the task list"
 
 rookery task assign board-task alpha >/dev/null
@@ -188,6 +189,32 @@ if rookery task "done" archivable 2>/dev/null; then fail "task done on an empty 
 rookery task "done" board-task-2 >/dev/null
 [ -f "$ROOKERY_BASE/alpha.clean" ] || fail "task done did not mark the workspace"
 [ ! -f "$ROOKERY_BASE/beta.clean" ] || fail "task done marked a workspace outside the task"
+
+# --- parent tasks --------------------------------------------------------
+rookery task add --id epic "Epic" >/dev/null
+rookery task add --id leaf --parent epic "Leaf" >/dev/null
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "leaf" and .parent == "epic")' >/dev/null 2>&1 || fail "parent was not stored"
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "epic" and (has("parent") | not))' >/dev/null 2>&1 || fail "a root task grew a parent field"
+rookery task list | grep -Eq '^    leaf +open' || fail "task list did not indent the child"
+if rookery task add --id deep --parent leaf "Deep" 2>/dev/null; then fail "a two-level parent link was accepted"; fi
+if rookery task parent epic leaf 2>/dev/null; then fail "a parent was made a child of its child"; fi
+if rookery task parent leaf leaf 2>/dev/null; then fail "a task was made its own parent"; fi
+if rookery task parent leaf missing 2>/dev/null; then fail "a missing parent was accepted"; fi
+if rookery task archive epic 2>/dev/null; then fail "archiving a parent with an open child succeeded"; fi
+rookery task parent --clear leaf >/dev/null
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "leaf" and (has("parent") | not))' >/dev/null 2>&1 || fail "--clear did not make a root"
+rookery task parent leaf epic >/dev/null
+rookery task archive leaf >/dev/null
+rookery task archive epic >/dev/null
+
+# Recursive done marks the whole subtree; plain done refuses a lead.
+rookery task add --id lead-task "Lead task" >/dev/null
+rookery task add --id worker-task --parent lead-task "Worker task" >/dev/null
+rookery task assign worker-task beta >/dev/null
+if rookery task done lead-task 2>/dev/null; then fail "task done ignored an open child"; fi
+rookery task done --recursive lead-task >/dev/null
+[ -f "$ROOKERY_BASE/beta.clean" ] || fail "recursive task done missed the child workspace"
+rookery task assign --move board-task beta >/dev/null
 
 # --- cleanup -------------------------------------------------------------
 # beta is not part of board-task-2; mark it and give it work that forbids

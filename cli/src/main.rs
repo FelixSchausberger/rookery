@@ -4,9 +4,10 @@ use rookery_core::config::Config;
 use rookery_core::error::{Error, Result};
 use rookery_core::lifecycle::{self, Launch, Line};
 use rookery_core::seat::{self, HerdrOptions};
-use rookery_core::task::Store;
+use rookery_core::task::{Store, Task};
 use rookery_core::util::{now_secs, xdg_cache};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -19,10 +20,11 @@ Usage:
   rookery seat [--json]
   rookery title <text...>
   rookery ls [--counts|--board|--json] [--refresh]
-  rookery task add [--id ID] [--notes TEXT] <title...>
+  rookery task add [--id ID] [--parent ID] [--notes TEXT] <title...>
+  rookery task parent [--clear] <child> [<parent>]
   rookery task assign [--move] <task> <workspace>
   rookery task list [--json]
-  rookery task done <task>
+  rookery task done [--recursive] <task>
   rookery task note <task> <text...>
   rookery task archive <task>
   rookery clean [--current|<workspace>] [--unmark]
@@ -171,9 +173,17 @@ enum TaskCmd {
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
+        parent: Option<String>,
+        #[arg(long)]
         notes: Option<String>,
         #[arg(required = true, trailing_var_arg = true)]
         title: Vec<String>,
+    },
+    Parent {
+        #[arg(long)]
+        clear: bool,
+        child: String,
+        parent: Option<String>,
     },
     Assign {
         #[arg(long = "move")]
@@ -186,6 +196,8 @@ enum TaskCmd {
         json: bool,
     },
     Done {
+        #[arg(long)]
+        recursive: bool,
         task: String,
     },
     Note {
@@ -402,15 +414,42 @@ fn run(cli: Cli) -> Result<()> {
 fn run_task(config: &Config, command: TaskCmd) -> Result<()> {
     let store = Store::new(&config.base);
     match command {
-        TaskCmd::Add { id, notes, title } => {
+        TaskCmd::Add {
+            id,
+            parent,
+            notes,
+            title,
+        } => {
             let title = title.join(" ");
             let id = rookery_core::ops::task_add(
                 config,
                 &title,
                 id.as_deref(),
                 notes.as_deref().unwrap_or(""),
+                parent.as_deref(),
             )?;
             println!("rookery: task '{id}' added ({title})");
+            Ok(())
+        }
+        TaskCmd::Parent {
+            clear,
+            child,
+            parent,
+        } => {
+            let parent = match (clear, parent) {
+                (true, None) => None,
+                (false, Some(parent)) => Some(parent),
+                (true, Some(_)) => {
+                    return Err(Error::usage("rookery task parent: --clear takes no parent"));
+                }
+                (false, None) => {
+                    return Err(Error::usage(
+                        "rookery task parent: a parent is required (or --clear)",
+                    ));
+                }
+            };
+            let message = rookery_core::ops::task_parent(config, &child, parent.as_deref())?;
+            println!("{message}");
             Ok(())
         }
         TaskCmd::Assign {
@@ -430,20 +469,39 @@ fn run_task(config: &Config, command: TaskCmd) -> Result<()> {
                     println!("{}", serde_json::to_string(task).unwrap_or_default());
                 }
             } else {
+                let mut printed: HashSet<&str> = HashSet::new();
+                let roots: Vec<&Task> = store
+                    .tasks
+                    .iter()
+                    .filter(|task| {
+                        task.parent.as_deref().is_none_or(|parent| {
+                            !store.tasks.iter().any(|entry| entry.id == parent)
+                        })
+                    })
+                    .collect();
+                for root in roots {
+                    print_task(root, 0);
+                    printed.insert(root.id.as_str());
+                    for child in store
+                        .tasks
+                        .iter()
+                        .filter(|task| task.parent.as_deref() == Some(root.id.as_str()))
+                    {
+                        print_task(child, 2);
+                        printed.insert(child.id.as_str());
+                    }
+                }
+                // A hand-edited deeper or cyclic link must not hide a task.
                 for task in &store.tasks {
-                    println!(
-                        "  {:<24} {:<8} {} {}",
-                        task.id,
-                        task.status,
-                        task.workspaces.len(),
-                        task.title
-                    );
+                    if printed.insert(task.id.as_str()) {
+                        print_task(task, 0);
+                    }
                 }
             }
             Ok(())
         }
-        TaskCmd::Done { task } => {
-            let lines = rookery_core::ops::task_done(config, &task)?;
+        TaskCmd::Done { recursive, task } => {
+            let lines = rookery_core::ops::task_done(config, &task, recursive)?;
             print_lines(&lines);
             Ok(())
         }
@@ -515,6 +573,18 @@ fn launch_process(launch: Launch) -> Result<()> {
         "rookery: cannot run {}: {err}",
         launch.program
     )))
+}
+
+fn print_task(task: &Task, indent: usize) {
+    println!(
+        "  {:indent$}{:<24} {:<8} {} {}",
+        "",
+        task.id,
+        task.status,
+        task.workspaces.len(),
+        task.title,
+        indent = indent
+    );
 }
 
 fn print_lines(lines: &[Line]) {
