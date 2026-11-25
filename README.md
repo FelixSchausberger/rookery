@@ -74,7 +74,7 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 | `rookery task parent [--clear] <child> [<parent>]`                  | set or clear a task's parent                                                          |
 | `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                                              |
 | `rookery task list [--json]`                                        | list tasks and their workspaces                                                       |
-| `rookery task done [--recursive] <task>`                            | lead-only: mark the workspaces, set the task done                                     |
+| `rookery task done [--recursive] <task>`                            | lead-only: mark the workspaces, or a whole subtree, for cleanup                       |
 | `rookery task note <task> <text...>`                                | append a decision or follow-up to the task's notes                                    |
 | `rookery task archive <task>`                                       | archive a task whose workspaces are gone                                              |
 | `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                                                |
