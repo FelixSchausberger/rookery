@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::jj;
 use crate::lifecycle::Line;
-use crate::task::Store;
+use crate::task::{self, Store};
 use crate::util::{now_secs, task_slug, valid_task};
 
 /// The task verbs shared by the CLI and the board, so both frontends report
@@ -96,21 +96,58 @@ pub fn task_done(config: &Config, task: &str) -> Result<Vec<Line>> {
             "rookery task done: no task named '{task}'"
         )));
     };
+    if target.status == task::ARCHIVED {
+        return Err(Error::message(format!(
+            "rookery task done: '{task}' is archived"
+        )));
+    }
     if target.workspaces.is_empty() {
         return Err(Error::message(format!(
             "rookery task done: '{task}' has no workspaces; use 'rookery task archive {task}'"
         )));
     }
+    // The lead owns the lifecycle decision. A worker runs inside one of the
+    // task's workspaces, so it cannot declare the whole task finished.
+    if let Some(current) = jj::workspace_at_cwd(config)? {
+        if target
+            .workspaces
+            .iter()
+            .any(|workspace| workspace == &current)
+        {
+            return Err(Error::refused(format!(
+                "rookery task done: '{current}' is grouped under '{task}'; a worker cannot finish its own task. Run this from the lead's ungrouped workspace."
+            )));
+        }
+    }
+
     let mut lines = Vec::new();
-    for workspace in target.workspaces {
-        if !jj::exists(&workspace)? {
+    let mut present = Vec::new();
+    for workspace in &target.workspaces {
+        if !jj::exists(workspace)? {
             lines.push(Line {
                 stderr: true,
-                text: format!("rookery: skipping '{workspace}' (no such workspace)"),
+                text: format!("rookery: dropping '{workspace}' (no such workspace)"),
             });
             continue;
         }
-        let marker = config.clean_marker(&workspace);
+        present.push(workspace.clone());
+        match jj::state(config, workspace, None) {
+            Ok((state, _)) if state.has_work() => lines.push(Line {
+                stderr: true,
+                text: format!(
+                    "rookery: '{workspace}' has {}; clean --apply will keep it until that is resolved",
+                    state.as_str()
+                ),
+            }),
+            Err(_) => lines.push(Line {
+                stderr: true,
+                text: format!(
+                    "rookery: cannot classify '{workspace}'; clean --apply will decide"
+                ),
+            }),
+            _ => {}
+        }
+        let marker = config.clean_marker(workspace);
         std::fs::write(&marker, format!("{}\n", now_secs()))
             .map_err(|err| Error::message(format!("rookery: cannot mark '{workspace}': {err}")))?;
         lines.push(Line {
@@ -118,5 +155,41 @@ pub fn task_done(config: &Config, task: &str) -> Result<Vec<Line>> {
             text: format!("rookery: '{workspace}' marked for cleanup"),
         });
     }
+
+    for workspace in target
+        .workspaces
+        .iter()
+        .filter(|workspace| !present.contains(workspace))
+    {
+        store.drop_ws(workspace)?;
+    }
+
+    if present.is_empty() {
+        store.set_status(task, task::ARCHIVED)?;
+        lines.push(Line {
+            stderr: false,
+            text: format!("rookery: task '{task}' archived (no workspaces remain)"),
+        });
+        return Ok(lines);
+    }
+
+    // Markers first, status second. A crash between the two leaves marks on an
+    // open task, which clean --apply ignores; a retry is safe.
+    store.set_status(task, task::DONE)?;
+    lines.push(Line {
+        stderr: false,
+        text: format!(
+            "rookery: task '{task}' is done; run 'rookery clean --apply' to reclaim its workspaces"
+        ),
+    });
     Ok(lines)
+}
+
+pub fn task_note(config: &Config, task: &str, text: &str) -> Result<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(Error::usage("rookery task note: text is required"));
+    }
+    Store::new(&config.base).note(task, text)?;
+    Ok(format!("rookery: task '{task}' note added"))
 }

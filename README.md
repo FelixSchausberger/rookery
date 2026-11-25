@@ -70,10 +70,11 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 | `rookery seat [--json]`                                             | print the calling agent's herdr workspace, tab, and pane       |
 | `rookery title <text...>`                                           | claim the current seat: describe, rename the workspace and tab |
 | `rookery ls [--counts\|--board\|--json] [--refresh]`                | classify every workspace                                       |
-| `rookery task add <title...> [--id ID] [--notes TEXT]`              | create a backlog task                                          |
+| `rookery task add [--id ID] [--notes TEXT] <title...>`              | create a backlog task                                          |
 | `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                       |
 | `rookery task list [--json]`                                        | list tasks and their workspaces                                |
-| `rookery task done <task>`                                          | mark every workspace of the task for cleanup                   |
+| `rookery task done <task>`                                          | lead-only: mark the workspaces, set the task done              |
+| `rookery task note <task> <text...>`                                | append a decision or follow-up to the task's notes             |
 | `rookery task archive <task>`                                       | archive a task whose workspaces are gone                       |
 | `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                         |
 | `rookery clean --unmark [--current\|<workspace>]`                   | clear the cleanup mark                                         |
@@ -122,17 +123,40 @@ A task groups zero or more workspaces under one stable id, stored in
 `ROOKERY_BASE/tasks.json`. Writes serialize on `tasks.json.lock` and replace the
 document atomically, so read paths (`ls --json`, `task list --json`) take no
 lock. A workspace belongs to at most one task; `task assign` refuses to move a
-grouped workspace unless `--move` is given. A workspace with no task is still a
-row on the board, with `task: null`. `rookery title` follows a rename, and every
-removal path drops the workspace from its task.
+grouped workspace unless `--move` is given, and only an open task accepts
+workspaces. A workspace with no task is still a row on the board, with
+`task: null`. `rookery title` follows a rename, and every removal path drops
+the workspace from its task.
+
+The task status is the lifecycle authority. `open` (the default) holds every
+grouped workspace out of `gc` and out of `clean --apply`, so a worker that
+finishes early cannot lose its workspace before the lead has integrated the
+result. `done` is the lead's decision: `task done` marks every grouped
+workspace and releases the hold, and `clean --apply` may then remove the ones
+that are empty or merged. `archived` is hidden from the board. A done task
+whose last workspace is removed archives itself, and an open task stays visible
+with zero workspaces as a backlog item.
+
+`task done` refuses to run from a workspace grouped under the task: a worker
+cannot finish its own task. Run it from the lead's ungrouped workspace or from
+the primary checkout. An open task that has not been touched for
+`ROOKERY_TASK_STALE_DAYS` (default 14) surfaces in `gc` output once, so a lead
+that disappeared cannot hold workspaces silently; `task note` resets the
+clock. Workspaces with unpushed, in-flight, or conflicted work
+are still marked, but `clean --apply` keeps them and names the reason, so the
+task cannot archive until that work is merged or deliberately discarded.
+
+`rookery task note <id> <text...>` appends a decision or follow-up to the
+task's durable notes; that is where a lead records a deferred follow-up instead
+of leaving a workspace behind.
 
 `rookery clean` writes a `<workspace>.clean` marker beside the wait marker. The
 mark is a person's request, not a stored state: a task's lane is always derived
 from its workspaces. `rookery clean --apply` removes a marked workspace only
 when it classifies as `empty` or `merged`, no process is rooted in its
 directory, and it holds no unpushed, in-flight, or conflicted work. The mark is
-consent for the session-age hold that `gc` otherwise applies. Every removal
-path clears both markers.
+consent for the session-age hold that `gc` otherwise applies, but never consent
+to close an open task. Every removal path clears both markers.
 
 `rookery open` focuses an existing seat through the CLI: a workspace name
 resolves directly, and a task id resolves to a live grouped workspace or the
@@ -189,10 +213,14 @@ zellij pane, or a plain terminal only decide where it runs.
 have no live process. It never removes:
 
 - a workspace with unpushed, in-flight, or conflicted work
+- a workspace grouped under an open task, whatever its state
 - a workspace with a process rooted in it
 - a workspace with an unarchived OpenCode session updated within the session
   age window
 - a parked workspace (`rookery wait`), whatever its state
+
+An unreadable task store makes `gc` skip the pass and `clean --apply` keep every
+marked workspace: unknown never means empty.
 
 Per-project MCP and LSP daemons inherit the spawning session's cwd and outlive
 it, so the process probe excludes known auxiliary binaries and accepts extra
@@ -248,6 +276,8 @@ The TUI has no environment counterpart.
 - `ROOKERY_V2=1` runs the `opencode2` entry point instead of `opencode`
 - `ROOKERY_AGENT_BIN` overrides the agent CLI used by seats and `reap`
 - `ROOKERY_SESSION_ARCHIVE` sets the `reap` export directory
+- `ROOKERY_TASK_STALE_DAYS` (default 14) surfaces an open task that has not
+  been touched; `task note` resets the clock
 - `ROOKERY_BOARD_JOBS` (default 8, clamped 1-32) bounds the board's parallel work
 - `ROOKERY_LIVE_EXCLUDE` adds a `grep -E` pattern to the liveness exclusion
 - `ROOKERY_HOOK_{PRE,POST}_{CREATE,DELETE}` run around create and remove, with

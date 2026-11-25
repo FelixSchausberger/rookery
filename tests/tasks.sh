@@ -202,6 +202,7 @@ out=$(rookery clean --apply)
 printf '%s' "$out" | grep -Fq "keeping 'beta' (unpushed)" || fail "clean --apply removed unpushed work: $out"
 [ -d "$ROOKERY_BASE/${ws_prefix}beta" ] || fail "clean --apply removed beta"
 [ -d "$ROOKERY_BASE/${ws_prefix}alpha" ] && fail "clean --apply kept a marked, merged workspace"
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "board-task-2" and .status == "archived")' >/dev/null 2>&1 || fail "a done task whose last workspace was removed did not archive"
 
 # A live process also protects a marked empty workspace.
 jj workspace add "$ROOKERY_BASE/${ws_prefix}gamma" --name gamma -r main@origin -m "gamma: started from main@origin" >/dev/null 2>&1
@@ -263,8 +264,60 @@ seat2=$(rookery herdr --task board-task --json)
 if rookery herdr --task missing 2>/dev/null; then fail "herdr --task accepted an unknown task"; fi
 if rookery herdr --task archivable 2>/dev/null; then fail "herdr --task accepted an archived task"; fi
 
+# --- task lifecycle ------------------------------------------------------
+# An open task holds its workspaces out of gc and out of the cleanup sweep,
+# even after a worker marks itself. Only `task done` by an ungrouped caller
+# releases them, and the last removal archives the task.
+jj workspace add "$ROOKERY_BASE/${ws_prefix}epsilon" --name epsilon -r main@origin -m "epsilon: started from main@origin" >/dev/null 2>&1
+rookery task add --id lifecycle "Lifecycle" >/dev/null
+rookery task assign lifecycle epsilon >/dev/null
+rookery task note lifecycle "decision: keep the daemon" >/dev/null
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "lifecycle" and (.notes | contains("decision: keep the daemon")))' >/dev/null 2>&1 || fail "task note did not persist"
+if (cd "$ROOKERY_BASE/${ws_prefix}epsilon" && rookery task "done" lifecycle 2>/dev/null); then
+	fail "a grouped worker finished its own task"
+fi
+rookery clean epsilon >/dev/null
+out=$(rookery clean --apply)
+printf '%s' "$out" | grep -Fq "keeping 'epsilon' (task 'lifecycle' open)" || fail "clean --apply ignored the open task: $out"
+[ -d "$ROOKERY_BASE/${ws_prefix}epsilon" ] || fail "clean --apply removed an open task workspace"
+touch -d "2 days ago" "$ROOKERY_BASE/${ws_prefix}epsilon"
+out=$(rookery gc)
+printf '%s' "$out" | grep -Fq "keeping 'epsilon' (task 'lifecycle' open)" || fail "gc reclaimed an open task workspace: $out"
+[ -d "$ROOKERY_BASE/${ws_prefix}epsilon" ] || fail "gc removed an open task workspace"
+tmp=$(mktemp)
+jq '.tasks |= map(if .id == "lifecycle" then .updated = 1 else . end)' "$ROOKERY_BASE/tasks.json" >"$tmp"
+mv "$tmp" "$ROOKERY_BASE/tasks.json"
+out=$(rookery gc)
+printf '%s' "$out" | grep -Fq "task 'lifecycle' has been open" || fail "gc did not nudge a stale open task: $out"
+rookery task "done" lifecycle >/dev/null
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "lifecycle" and .status == "done")' >/dev/null 2>&1 || fail "task done did not set the status"
+out=$(rookery clean --apply)
+printf '%s' "$out" | grep -Fq "removed 'epsilon'" || fail "clean --apply did not release a done task workspace: $out"
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "lifecycle" and .status == "archived")' >/dev/null 2>&1 || fail "the last workspace removal did not archive the task"
+
+# A done task with real work stays visible: clean --apply keeps the workspace
+# and archive refuses until the work is resolved or deliberately discarded.
+jj workspace add "$ROOKERY_BASE/${ws_prefix}zeta" --name zeta -r main@origin -m "zeta: started from main@origin" >/dev/null 2>&1
+rookery task add --id lifecycle-work "Lifecycle work" >/dev/null
+rookery task assign lifecycle-work zeta >/dev/null
+(
+	cd "$ROOKERY_BASE/${ws_prefix}zeta"
+	echo work >z.txt
+	jj describe -m "zeta: work" >/dev/null 2>&1
+)
+rookery task "done" lifecycle-work >/dev/null
+out=$(rookery clean --apply)
+printf '%s' "$out" | grep -Fq "keeping 'zeta' (unpushed)" || fail "clean --apply removed a done task's unpushed work: $out"
+if rookery task archive lifecycle-work 2>/dev/null; then fail "archive accepted a done task with a workspace"; fi
+rookery rm --force zeta >/dev/null
+printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "lifecycle-work" and .status == "archived")' >/dev/null 2>&1 || fail "discarding the last workspace did not archive the done task"
+
 # A corrupt store is reported by its owners and never rewritten by a read.
+jj workspace add "$ROOKERY_BASE/${ws_prefix}eta" --name eta -r main@origin -m "eta: started from main@origin" >/dev/null 2>&1
 printf 'garbage\n' >"$ROOKERY_BASE/tasks.json"
+out=$(rookery gc 2>&1)
+printf '%s' "$out" | grep -Fq "task store is unreadable" || fail "gc ignored an unreadable task store: $out"
+[ -d "$ROOKERY_BASE/${ws_prefix}eta" ] || fail "gc removed a workspace with an unreadable task store"
 if rookery task list 2>/dev/null; then fail "task list accepted a corrupt store"; fi
 rookery ls --json >/dev/null || fail "the JSON board failed on a corrupt store"
 grep -qx 'garbage' "$ROOKERY_BASE/tasks.json" || fail "a read rewrote the corrupt store"

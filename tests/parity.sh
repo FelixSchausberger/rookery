@@ -159,11 +159,9 @@ scenario() {
 	record "$work" "$bin" clean --unmark alpha
 	record "$work" "$bin" clean beta
 	record "$work" "$bin" clean --apply
-	record "$work" "$bin" task "done" parity-task
-	record "$work" "$bin" clean --apply
-	record "$work" "$bin" task archive parity-task-notes-one
-	record "$work" "$bin" task list --json
-	record "$work" "$bin" gc
+	# The task lifecycle is deliberately not parity-compared: the frozen v0.4
+	# shell only marks workspaces, while the Rust core sets the task status and
+	# holds open tasks out of gc. tests/tasks.sh owns those semantics.
 	record "$work" "$bin" open alpha
 	FAKE_PANE_CWD="$ROOKERY_BASE/ws-alpha"
 	export FAKE_PANE_CWD
@@ -183,7 +181,6 @@ scenario() {
 	record "$work" "$bin" ls --counts --refresh
 	record "$work" "$bin" "done" --force alpha
 	record "$work" "$bin" rm --force beta
-	record "$work" "$bin" gc
 
 	# Normalize everything the fixtures cannot make byte-identical: absolute
 	# roots, clocks and commit ids.

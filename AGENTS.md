@@ -50,6 +50,11 @@ do not introduce it beyond the `SeatBackend` and `SessionProvider` traits.
   directory that no longer exists is a candidate; a live workspace and a
   subdirectory of one are never touched. The agent entry point is the same one
   the seats use (`ROOKERY_V2`/`ROOKERY_AGENT_BIN`).
+- The task status is the lifecycle authority: `open` holds its workspaces out
+  of `gc` and `clean --apply`, `done` releases them, `archived` hides the task.
+  `task done` must refuse a caller inside a grouped workspace; only the lead
+  finishes a task. Keep the marker-then-status write order so a crash leaves an
+  open task that a retry can finish.
 - The package wraps jj, rip, direnv and the other runtime inputs on PATH.
   Consumers that follow their own nixpkgs get that nixpkgs's jj; do not assume
   the version in this flake is the one at runtime.
