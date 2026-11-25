@@ -405,14 +405,17 @@ impl Board {
                 .map(|(id, _)| id.clone())
                 .collect();
             for child_id in child_ids {
-                if let Some(child) = views.remove(&child_id) {
+                if let Some(mut child) = views.remove(&child_id) {
+                    child.parent = Some(id.clone());
                     view.children.push(child);
                 }
             }
+            view.parent = None;
             roots.push(view);
         }
         // Defensive: a hand-edited deeper or cyclic link must not hide a task.
-        while let Some((_, view)) = views.pop_first() {
+        while let Some((_, mut view)) = views.pop_first() {
+            view.parent = None;
             roots.push(view);
         }
         for workspace in standalone {
