@@ -226,7 +226,7 @@ rookery clean beta >/dev/null
 	jj describe -m "beta: work" >/dev/null 2>&1
 )
 out=$(rookery clean --apply)
-printf '%s' "$out" | grep -Fq "keeping 'beta' (unpushed)" || fail "clean --apply removed unpushed work: $out"
+printf '%s' "$out" | grep -Fq "keeping 'beta' (task 'board-task' open)" || fail "clean --apply removed an open task's workspace: $out"
 [ -d "$ROOKERY_BASE/${ws_prefix}beta" ] || fail "clean --apply removed beta"
 [ -d "$ROOKERY_BASE/${ws_prefix}alpha" ] && fail "clean --apply kept a marked, merged workspace"
 printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "board-task-2" and .status == "archived")' >/dev/null 2>&1 || fail "a done task whose last workspace was removed did not archive"
