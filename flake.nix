@@ -136,6 +136,19 @@
             touch $out
           '';
 
+        # The reaper's safety contract against a fixture database and a fake
+        # opencode: export before delete, skip a live workspace, keep a tree
+        # whose export failed, and leave a dry run read-only.
+        checks.rookery-reap =
+          pkgs.runCommand "rookery-reap-test" {
+            nativeBuildInputs = [rookeryRs] ++ testDeps;
+          } ''
+            cp ${./tests/reap.sh} reap.sh
+            chmod +x reap.sh
+            bash reap.sh
+            touch $out
+          '';
+
         checks.rookery-parity =
           pkgs.runCommand "rookery-parity-test" {
             nativeBuildInputs = [rookeryLegacy rookeryRs] ++ testDeps;

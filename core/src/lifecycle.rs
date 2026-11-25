@@ -7,7 +7,7 @@ use crate::task::Store;
 use crate::util::{now_secs, realpath_m, remove_with_rip, touched_since, valid_task};
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Debug)]
@@ -65,11 +65,7 @@ fn require_workspace(name: &str) -> Result<()> {
 }
 
 fn runner(config: &Config) -> String {
-    if config.v2 {
-        "opencode2".to_string()
-    } else {
-        "opencode".to_string()
-    }
+    config.agent_bin.clone()
 }
 
 pub fn create(
@@ -532,6 +528,195 @@ pub fn clean_apply(config: &Config, warnings: &mut Vec<String>) -> Result<Vec<Li
     }
     lines.push(Line::out(format!(
         "rookery clean: {removed} removed, {kept} kept"
+    )));
+    Ok(lines)
+}
+
+/// A session id is used as an archive directory name, so it must not carry a
+/// path separator or a traversal component.
+fn valid_session_id(value: &str) -> bool {
+    value.starts_with("ses_")
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn archive_slug(value: &str) -> String {
+    let slug: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if slug.is_empty() {
+        "session".to_string()
+    } else {
+        slug
+    }
+}
+
+/// Export and delete conversations whose working directory is gone. The
+/// export is written before the delete, and one failed member abandons the
+/// whole tree, so a conversation is never deleted without a readable archive.
+pub fn reap(config: &Config, dry_run: bool) -> Result<Vec<Line>> {
+    let mut lines = Vec::new();
+    if !config.session_db.is_file() {
+        lines.push(Line::out(format!(
+            "rookery reap: no session database at {}",
+            config.session_db.display()
+        )));
+        return Ok(lines);
+    }
+    let provider = SqliteSessions::new(config.session_db.clone());
+    let roots = provider.roots();
+    if roots.is_empty() {
+        lines.push(Line::out("rookery reap: no top-level sessions to inspect"));
+        return Ok(lines);
+    }
+    let workspaces: Vec<PathBuf> = jj::workspace_list()?
+        .into_iter()
+        .map(|entry| realpath_m(entry.root.as_deref().unwrap_or(&config.ws_dir(&entry.name))))
+        .collect();
+    lines.push(Line::out(format!(
+        "rookery reap: archive {}",
+        config.session_archive.display()
+    )));
+
+    let mut exported = 0;
+    let mut kept = 0;
+    for root in roots {
+        if !valid_session_id(&root.id) {
+            lines.push(Line::err(format!(
+                "rookery reap: keeping '{}' (unexpected session id)",
+                root.id
+            )));
+            kept += 1;
+            continue;
+        }
+        let dir = realpath_m(Path::new(&root.directory));
+        if dir.is_dir() {
+            continue;
+        }
+        // A session started in a subdirectory of a live workspace is not dead
+        // just because that subdirectory is gone.
+        if workspaces
+            .iter()
+            .any(|workspace| dir == *workspace || dir.starts_with(workspace))
+        {
+            continue;
+        }
+        let title = root
+            .title
+            .as_deref()
+            .unwrap_or("(no title)")
+            .replace('\n', " ");
+        if dry_run {
+            lines.push(Line::out(format!(
+                "rookery reap: would export and delete '{}' ({title})",
+                root.id
+            )));
+            continue;
+        }
+        let members = provider.tree_members(&root.id);
+        if members.is_empty() {
+            lines.push(Line::err(format!(
+                "rookery reap: keeping '{}' (no readable members)",
+                root.id
+            )));
+            kept += 1;
+            continue;
+        }
+        let archive = config.session_archive.join(&root.id);
+        if let Err(err) = fs::create_dir_all(&archive) {
+            lines.push(Line::err(format!(
+                "rookery reap: keeping '{}' (cannot create {}: {err})",
+                root.id,
+                archive.display()
+            )));
+            kept += 1;
+            continue;
+        }
+        let mut complete = true;
+        for (member, slug) in &members {
+            if !valid_session_id(member) {
+                lines.push(Line::err(format!(
+                    "rookery reap: keeping '{}' (unexpected member id '{member}')",
+                    root.id
+                )));
+                complete = false;
+                break;
+            }
+            let output = match Command::new(&config.agent_bin)
+                .args(["session", "export", member])
+                .output()
+            {
+                Ok(output) => output,
+                Err(err) => {
+                    lines.push(Line::err(format!(
+                        "rookery reap: cannot run {}: {err}",
+                        config.agent_bin
+                    )));
+                    complete = false;
+                    break;
+                }
+            };
+            if !output.status.success() {
+                let detail = String::from_utf8_lossy(&output.stderr);
+                lines.push(Line::out(format!(
+                    "rookery reap: keeping '{}' (export of {member} failed: {})",
+                    root.id,
+                    detail.trim()
+                )));
+                complete = false;
+                break;
+            }
+            if serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err() {
+                lines.push(Line::err(format!(
+                    "rookery reap: keeping '{}' (export of {member} is not JSON)",
+                    root.id
+                )));
+                complete = false;
+                break;
+            }
+            let path = archive.join(format!("{member}-{}.json", archive_slug(slug)));
+            if let Err(err) = fs::write(&path, &output.stdout) {
+                lines.push(Line::err(format!(
+                    "rookery reap: keeping '{}' (cannot write {}: {err})",
+                    root.id,
+                    path.display()
+                )));
+                complete = false;
+                break;
+            }
+        }
+        if !complete {
+            kept += 1;
+            continue;
+        }
+        let deleted = Command::new(&config.agent_bin)
+            .args(["session", "delete", &root.id])
+            .status()
+            .is_ok_and(|status| status.success());
+        if deleted {
+            exported += 1;
+            lines.push(Line::out(format!(
+                "rookery reap: exported and deleted '{}' ({title})",
+                root.id
+            )));
+        } else {
+            kept += 1;
+            lines.push(Line::err(format!(
+                "rookery reap: export kept for '{}' but delete failed",
+                root.id
+            )));
+        }
+    }
+    lines.push(Line::out(format!(
+        "rookery reap: {exported} exported and deleted, {kept} kept"
     )));
     Ok(lines)
 }

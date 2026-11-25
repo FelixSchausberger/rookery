@@ -51,6 +51,10 @@ pub struct Config {
     pub task_assign: Option<String>,
     pub hooks: Hooks,
     pub session_db: PathBuf,
+    /// Where `reap` writes a conversation export before deleting it.
+    pub session_archive: PathBuf,
+    /// The agent CLI that owns the session database; overridable for V2.
+    pub agent_bin: String,
     pub cache_dir: PathBuf,
     pub herdr_bin: String,
     /// The CLI the herdr pane re-enters to create a seat. The CLI itself uses
@@ -64,12 +68,13 @@ impl Config {
         let root = crate::jj::workspace_root()?;
         let base = resolve_base(&root)?;
         let live_exclude = build_live_exclude();
+        let v2 = v2_flag || env_nonempty("ROOKERY_V2").as_deref() == Some("1");
         Ok(Self {
             root,
             base,
             ws_prefix: env_nonempty("ROOKERY_WS_PREFIX").unwrap_or_else(|| "ws-".to_string()),
             trunk: env_nonempty("ROOKERY_TRUNK").unwrap_or_else(|| "main@origin".to_string()),
-            v2: v2_flag || env_nonempty("ROOKERY_V2").as_deref() == Some("1"),
+            v2,
             gc_age: env_i64("ROOKERY_GC_AGE", 86400),
             gc_empty_age: env_i64("ROOKERY_GC_EMPTY_AGE", 21600),
             gc_session_age: env_i64("ROOKERY_GC_SESSION_AGE", 604800),
@@ -85,6 +90,11 @@ impl Config {
                 post_delete: env_nonempty("ROOKERY_HOOK_POST_DELETE").unwrap_or_default(),
             },
             session_db: xdg_data("opencode").join("opencode.db"),
+            session_archive: env_nonempty("ROOKERY_SESSION_ARCHIVE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| xdg_data("rookery").join("sessions")),
+            agent_bin: env_nonempty("ROOKERY_AGENT_BIN")
+                .unwrap_or_else(|| if v2 { "opencode2" } else { "opencode" }.to_string()),
             cache_dir: xdg_cache("rookery"),
             herdr_bin: env_nonempty("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".to_string()),
             rookery_bin: env_nonempty("ROOKERY_BIN")

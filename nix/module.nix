@@ -236,6 +236,9 @@ in {
           [ -d "$repo" ] || exit 0
           cd "$repo"
           ${cfg.finalPackage}/bin/rookery gc
+          # gc removes the stale directories; the reaper exports and deletes
+          # the conversations that pointed at them.
+          ${cfg.finalPackage}/bin/rookery reap
         '');
       };
     };

@@ -10,6 +10,16 @@ pub struct SessionRow {
     pub updated: Option<i64>,
 }
 
+/// A top-level conversation and the directory it was started in. Subagent
+/// sessions are children of a root and are enumerated by `tree_members`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRoot {
+    pub id: String,
+    pub directory: String,
+    pub title: Option<String>,
+    pub updated: Option<i64>,
+}
+
 /// The agent-session provider. gc asks for directories, the JSON board asks
 /// for the conversation title and last update. When the trait is absent the
 /// board falls back to the process and touch checks.
@@ -45,6 +55,62 @@ impl SqliteSessions {
 
     fn since(age_seconds: i64) -> i64 {
         now_ms() - (age_seconds.max(0) * 1000)
+    }
+
+    /// Every top-level conversation, oldest first. A schema that cannot answer
+    /// the query yields an empty list, so the reaper never deletes on a guess.
+    pub fn roots(&self) -> Vec<SessionRoot> {
+        let Some(connection) = self.open() else {
+            return Vec::new();
+        };
+        let mut statement = match connection.prepare(
+            "select id, directory, title, time_updated from session_v2 \
+             where parent_id is null and directory is not null and directory <> '' \
+             order by time_updated asc",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
+        let rows = statement.query_map([], |row| {
+            Ok(SessionRoot {
+                id: row.get::<_, String>(0)?,
+                directory: row.get::<_, String>(1)?,
+                title: row.get::<_, Option<String>>(2)?,
+                updated: row.get::<_, Option<i64>>(3)?,
+            })
+        });
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
+    }
+
+    /// The root and every descendant: `session export` covers one session and
+    /// `session delete` removes the whole tree, so every member is exported
+    /// before the root is deleted. The slug is a file-name component.
+    pub fn tree_members(&self, root: &str) -> Vec<(String, String)> {
+        let Some(connection) = self.open() else {
+            return Vec::new();
+        };
+        let mut statement = match connection.prepare(
+            "with recursive tree(id) as (
+               select id from session_v2 where id = ?1
+               union all
+               select child.id from session_v2 child join tree parent on child.parent_id = parent.id
+             )
+             select tree.id, coalesce(session.slug, 'session')
+             from tree join session_v2 session on session.id = tree.id",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
+        let rows = statement.query_map([root], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        });
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
     }
 }
 
@@ -128,6 +194,44 @@ mod tests {
         let provider = SqliteSessions::new(dir.path().join("absent.db"));
         assert!(provider.recent_dirs(604800).is_empty());
         assert!(provider.recent_meta(604800).is_empty());
+    }
+
+    #[test]
+    fn roots_and_tree_members_follow_the_parent_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("opencode.db");
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "create table session_v2 (
+                   id text primary key,
+                   parent_id text,
+                   directory text,
+                   title text,
+                   slug text,
+                   time_updated integer,
+                   time_archived integer
+                 );
+                 insert into session_v2 values
+                   ('ses_root', null, '/ws/alpha', 'Root', 'root', 1, null),
+                   ('ses_child', 'ses_root', '/ws/alpha', null, 'child', 2, null),
+                   ('ses_other', null, '/ws/beta', 'Other', 'other', 3, null);",
+            )
+            .unwrap();
+        drop(connection);
+        let provider = SqliteSessions::new(db);
+        let roots = provider.roots();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].id, "ses_root");
+        assert_eq!(roots[0].directory, "/ws/alpha");
+        assert_eq!(
+            provider.tree_members("ses_root"),
+            vec![
+                ("ses_root".to_string(), "root".to_string()),
+                ("ses_child".to_string(), "child".to_string())
+            ]
+        );
+        assert!(provider.tree_members("ses_missing").is_empty());
     }
 
     #[test]
