@@ -30,7 +30,7 @@ Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Bloc
 
 
 ┌detail────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│enter open  d mark                                                                                                    │
+│enter open  d mark  p parent                                                                                          │
 │#polish                                                                                                               │
 │Polish the cards                                                                                                      │
 │created 2d · updated 30m                                                                                              │

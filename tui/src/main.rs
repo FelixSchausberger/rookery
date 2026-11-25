@@ -99,6 +99,9 @@ fn run(
                     Action::StartSeat(task) => backend.start_seat(task).map(|()| String::new()),
                     Action::AddTask(title) => backend.add_task(title),
                     Action::AssignTask { task, workspace } => backend.assign(task, workspace),
+                    Action::SetParent { child, parent } => {
+                        backend.set_parent(child, parent.as_deref())
+                    }
                     Action::Quit | Action::Refresh => unreachable!(),
                 };
                 match result {

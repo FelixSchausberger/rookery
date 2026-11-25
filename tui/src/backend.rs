@@ -14,6 +14,7 @@ pub trait Backend: Send + Sync {
     fn start_seat(&self, task: &str) -> Result<(), String>;
     fn add_task(&self, title: &str) -> Result<String, String>;
     fn assign(&self, task: &str, workspace: &str) -> Result<String, String>;
+    fn set_parent(&self, child: &str, parent: Option<&str>) -> Result<String, String>;
 }
 
 /// The backend caches the loaded config for the life of the board. `Config`
@@ -78,5 +79,9 @@ impl Backend for CoreBackend {
 
     fn assign(&self, task: &str, workspace: &str) -> Result<String, String> {
         ops::task_assign(&self.config()?, task, workspace, false).map_err(|err| err.to_string())
+    }
+
+    fn set_parent(&self, child: &str, parent: Option<&str>) -> Result<String, String> {
+        ops::task_parent(&self.config()?, child, parent).map_err(|err| err.to_string())
     }
 }

@@ -8,9 +8,9 @@ lookup from an OpenCode session back to its pane. Tasks group workspaces that
 belong to one piece of work, the JSON board feeds a TUI client, and
 `rookery-tui` renders that board.
 
-A rookery is a colony of nests in one place: one base directory, one workspace
-per task, one agent per workspace. A rook is also a piece on a board, which is
-what the board view is.
+A rookery is a colony of nests in one place: one base directory, one or more
+workspaces per task, one agent per workspace. A rook is also a piece on a
+board, which is what the board view is.
 
 This project is the extracted workspace manager of a personal NixOS fleet. The
 fleet pins it as a flake input and configures it through the bundled Home
@@ -70,10 +70,11 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 | `rookery seat [--json]`                                             | print the calling agent's herdr workspace, tab, and pane                              |
 | `rookery title <text...>`                                           | claim the current seat: describe, rename the workspace and tab                        |
 | `rookery ls [--counts\|--board\|--json] [--refresh]`                | classify every workspace                                                              |
-| `rookery task add [--id ID] [--notes TEXT] <title...>`              | create a backlog task                                                                 |
+| `rookery task add [--id ID] [--parent ID] [--notes TEXT] <title...>` | create a backlog task or a child of an existing task                                  |
+| `rookery task parent [--clear] <child> [<parent>]`                  | set or clear a task's parent                                                          |
 | `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                                              |
 | `rookery task list [--json]`                                        | list tasks and their workspaces                                                       |
-| `rookery task done <task>`                                          | lead-only: mark the workspaces, set the task done                                     |
+| `rookery task done [--recursive] <task>`                            | lead-only: mark the workspaces, set the task done                                     |
 | `rookery task note <task> <text...>`                                | append a decision or follow-up to the task's notes                                    |
 | `rookery task archive <task>`                                       | archive a task whose workspaces are gone                                              |
 | `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                                                |
@@ -128,6 +129,16 @@ workspaces. A workspace with no task is still a row on the board, with
 `task: null`. `rookery title` follows a rename, and every removal path drops
 the workspace from its task.
 
+A task may name one parent. Only one level is allowed: a child cannot have
+children and a parent cannot have a parent, which makes cycles impossible. A
+lead task and its worker tasks use this link; the board draws the workers under
+the lead and derives the lead's lane from the whole subtree. `task list`
+indents children; `--json` keeps one flat object per task and adds `parent`
+only when the link exists. The store is version 2; a version-1 store still
+reads as all roots and is upgraded on the next write. Older binaries ignore
+the field but drop it when they rewrite the document, so upgrade the fleet
+before creating links.
+
 The task status is the lifecycle authority. `open` (the default) holds every
 grouped workspace out of `gc` and out of `clean --apply`, so a worker that
 finishes early cannot lose its workspace before the lead has integrated the
@@ -145,10 +156,17 @@ that disappeared cannot hold workspaces silently; `task note` resets the
 clock. Workspaces with unpushed, in-flight, or conflicted work
 are still marked, but `clean --apply` keeps them and names the reason, so the
 task cannot archive until that work is merged or deliberately discarded.
+`task done` also refuses a task with open child tasks unless `--recursive`;
+recursive marks the whole subtree and sets each member done or archived. A task
+whose children are still open cannot be archived.
 
 `rookery task note <id> <text...>` appends a decision or follow-up to the
 task's durable notes; that is where a lead records a deferred follow-up instead
 of leaving a workspace behind.
+
+A conversation is an open OpenCode tab in a workspace; `Task.workspaces` is the
+set of conversations a task owns. The board shows one row per workspace and is
+the control surface for those seats, not a second agent runtime.
 
 `rookery clean` writes a `<workspace>.clean` marker beside the wait marker. The
 mark is a person's request, not a stored state: a task's lane is always derived
@@ -163,16 +181,43 @@ resolves directly, and a task id resolves to a live grouped workspace or the
 first one jj still lists. The verb is backend-neutral; the herdr-specific
 lookup stays inside the command.
 
+## Leads and subagents
+
+A task with children is a lead. Its own workspace is the lead seat, and every
+child is a worker; the board draws the workers indented under the lead with a
+`↳` marker. The lead delegates through the `herdr-lead` protocol, not through
+the board.
+
+- One level of nesting. A lead runs at most four live workers and owns at most
+  eight child tasks; simple work gets one worker. Raising either bound is a
+  person's decision, not a board setting.
+- A blocked worker is the person's. The lead parks the child with
+  `rookery wait <child> "worker blocked: <prompt>"`, which moves the lead to
+  Blocked, and unparks it after the person answers. The lead never answers a
+  blocked prompt.
+- A failed report is data. The lead parks the child with the failure reason or
+  leaves it Active; the board never parses report files.
+- Cancellation closes the child's tab and session, marks the child with `d`,
+  and lets `clean --apply` refuse anything with live, unpushed, or conflicted
+  work. There is no kill button on the board.
+- A lead finishes only when every child is archived and the lead's own
+  workspace is merged or empty. The close-out is `task done --recursive`,
+  `clean --apply`, then `task archive` on the children and the lead.
+
 ## Board TUI
 
 `rookery-tui` is the one board: tasks and standalone workspaces as cards in
 five derived lanes. A card carries the title, task id, workspace count,
 aggregate state, session, wait/clean markers and age; the selected card
-expands in place with one row per workspace.
+expands in place with one row per workspace. A lead task shows its subagent
+tasks as indented child cards with a `↳` marker; the lead's lane is derived
+from the whole subtree, so a blocked worker moves the lead to Blocked. A child
+never occupies a lane of its own.
 
-- Backlog: no workspaces. Active: a live or unpushed workspace. Review: every
-  workspace is merged, empty, or in flight. Blocked: a conflict or a wait
-  marker. To Clean: every workspace is marked. Archived tasks are hidden.
+- Backlog: no workspaces anywhere in the task subtree. Active: a live or
+  unpushed workspace. Review: every workspace is merged, empty, or in flight.
+  Blocked: a conflict or a wait marker. To Clean: every workspace is marked.
+  Archived tasks are hidden.
 - At 110 columns and wider the five lanes share the width. Below that one lane
   is focused and a lane bar keeps all five counts visible. Cards are compact
   below 70 columns or when a lane is narrower than 29 columns, so the five-lane
@@ -180,18 +225,19 @@ expands in place with one row per workspace.
   counts live, session, wait, conflict and stale workspaces and the time since
   the last successful refresh.
 - Keys: `h`/`l` and `Tab`/`Shift-Tab` switch lanes, `1`-`5` jump to a lane,
-  `j`/`k` move between cards, `Space` expands or collapses a card, `Enter`
-  opens the selected task or workspace seat, `d` marks the task or workspace
-  for cleanup, `s` starts a seat for a task with no workspace, `n` creates a
-  backlog task, `a` assigns an ungrouped workspace, `gg`/`G` jump to the first
-  or last card, `Ctrl-d`/`Ctrl-u` scroll half a page, `PgDn`/`PgUp` scroll a
-  page, `i` toggles the detail pane, `/` filters live, `f` cycles the filter
-  presets, `o` cycles the sort, `r` refreshes, `?` opens the key help, `Esc`
-  clears the filter or closes the detail pane, and `q` quits.
-- The detail pane shows the selected task's notes and timestamps and each
-  workspace's state, hold, session, wait, clean marker and path. It is a right
-  pane at 143 columns, a bottom pane at 70x24, and a footer hint when neither
-  fits.
+  `j`/`k` move between cards and child cards, `Space` expands or collapses a
+  card, `Enter` opens the selected task or workspace seat, `d` marks the task
+  or workspace for cleanup, `s` starts a seat for a task with no workspace,
+  `n` creates a backlog task, `a` assigns an ungrouped workspace, `p` sets or
+  clears the selected task's parent, `gg`/`G` jump to the first or last card,
+  `Ctrl-d`/`Ctrl-u` scroll half a page, `PgDn`/`PgUp` scroll a page, `i`
+  toggles the detail pane, `/` filters live, `f` cycles the filter presets,
+  `o` cycles the sort, `r` refreshes, `?` opens the key help, `Esc` clears the
+  filter or closes the detail pane, and `q` quits.
+- The detail pane shows the selected task's parent, children, notes and
+  timestamps and each workspace's state, hold, session, wait, clean marker and
+  path. It is a right pane at 143 columns, a bottom pane at 70x24, and a footer
+  hint when neither fits.
 - `/` matches titles, ids, notes, workspace names, descriptions and session
   titles. `f` cycles all, attention, live, unpushed and reclaimable; `o`
   cycles attention, title and updated. `Esc` restores the selection from before
