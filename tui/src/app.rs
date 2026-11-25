@@ -776,8 +776,6 @@ impl App {
         }
         let key = card.key.clone();
         if self.expanded.remove(&key) {
-            // The selected child or workspace belongs to the collapsed card.
-            self.cursor.node = 0;
             self.cursor.child = None;
         } else {
             self.expanded.insert(key);
