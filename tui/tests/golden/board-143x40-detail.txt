@@ -1,0 +1,40 @@
+rookery board  6 cards  6 workspaces   live 1  session 0  wait 1  conflict 0  stale 1   refreshed 0s
+Backlog 1 · 0ws       Active 2 · 3ws        Review 1 · 1ws         Blocked 1 · 1ws       To Clean 1 · 1ws      ┌detail────────────────────────┐
+▌ Plan the next rele… ▌ Fix the board … (2) ▌ Polish the cards (1) ▌ Wait for the d… (1) ▌ Clean the old … (1) │enter open  d mark            │
+  press s to start a…   1 unpushed · 1 live   1 merged · session …   1 empty · wait: de…   1 unpushed · sweep… │#polish                       │
+                      ▌ Loose experiment    ▸ ws-polish                                                        │Polish the cards              │
+                        1 unpushed            merged 1h                                                        │created 2d · updated 30m      │
+                                                                                                               │ws-polish                     │
+                                                                                                               │merged · 1h                   │
+                                                                                                               │session "Board polish" 30m    │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               │                              │
+                                                                                                               └──────────────────────────────┘
+enter open  d mark  space collapse  i detail  ? help

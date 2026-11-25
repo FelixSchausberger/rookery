@@ -1,11 +1,11 @@
 rookery board  1 card  2 workspaces   live 1  session 0  wait 0  conflict 0  stale 0   refreshed 0s
 Backlog 0 · 0ws         Active 1 · 2ws          Review 0 · 0ws           Blocked 0 · 0ws         To Clean 0 · 0ws
-(no workspaces yet)     ╭─────────────────────╮ (no merged or in-flight… (no waits or conflicts) (no cleanup marks)
-                        │Fix the board cache 2│
-                        │#cache · updated 2h  │
-                        │1 unpushed · 1 merged│
-                        │1 live               │
-                        ╰─────────────────────╯
+(no workspaces yet)     ▌ Fix the board ca… (2) (no merged or in-flight… (no waits or conflicts) (no cleanup marks)
+                          1 unpushed · 1 merge…
+
+
+
+
 
 
 
