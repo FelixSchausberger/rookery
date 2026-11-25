@@ -11,22 +11,22 @@ use backend::{Backend, CoreBackend};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use model::Board;
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
 use rookery_core::util::now_secs;
 use std::io;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 const REFRESH: Duration = Duration::from_secs(2);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let backend: Arc<dyn Backend> = Arc::new(CoreBackend);
+    let backend: Arc<dyn Backend> = Arc::new(CoreBackend::default());
     let mut app = App::new(Board::default());
     match backend.load() {
         Ok(board) => app.set_board(board),
@@ -56,12 +56,10 @@ fn run(
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let loader = Arc::clone(&backend);
-    thread::spawn(move || {
-        loop {
-            thread::sleep(REFRESH);
-            if tx.send(loader.load()).is_err() {
-                break;
-            }
+    thread::spawn(move || loop {
+        thread::sleep(REFRESH);
+        if tx.send(loader.load()).is_err() {
+            break;
         }
     });
 

@@ -4,6 +4,7 @@ use crate::model::Board;
 use rookery_core::config::Config;
 use rookery_core::seat::HerdrOptions;
 use rookery_core::{board::Board as CoreBoard, lifecycle, ops, seat};
+use std::sync::OnceLock;
 
 pub trait Backend: Send + Sync {
     fn load(&self) -> Result<Board, String>;
@@ -15,24 +16,37 @@ pub trait Backend: Send + Sync {
     fn assign(&self, task: &str, workspace: &str) -> Result<String, String>;
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CoreBackend;
+/// The backend caches the loaded config for the life of the board. `Config`
+/// settles the repository root, base directory and environment once; reloading
+/// it every two seconds only re-ran the jj root probe. A failed load is not
+/// cached, so `r` still retries.
+#[derive(Debug, Default)]
+pub struct CoreBackend {
+    config: OnceLock<Config>,
+}
 
-fn config() -> Result<Config, String> {
-    Config::load(false).map_err(|err| err.to_string())
+impl CoreBackend {
+    fn config(&self) -> Result<Config, String> {
+        if let Some(config) = self.config.get() {
+            return Ok(config.clone());
+        }
+        let config = Config::load(false).map_err(|err| err.to_string())?;
+        let _ = self.config.set(config.clone());
+        Ok(config)
+    }
 }
 
 impl Backend for CoreBackend {
     fn load(&self) -> Result<Board, String> {
-        CoreBoard::load(&config()?, false, true).map_err(|err| err.to_string())
+        CoreBoard::load(&self.config()?, false, true).map_err(|err| err.to_string())
     }
 
     fn open(&self, target: &str) -> Result<String, String> {
-        seat::open(&config()?, target).map_err(|err| err.to_string())
+        seat::open(&self.config()?, target).map_err(|err| err.to_string())
     }
 
     fn mark_task(&self, task: &str) -> Result<String, String> {
-        let lines = ops::task_done(&config()?, task).map_err(|err| err.to_string())?;
+        let lines = ops::task_done(&self.config()?, task).map_err(|err| err.to_string())?;
         Ok(lines
             .first()
             .map(|line| line.text.clone())
@@ -40,7 +54,7 @@ impl Backend for CoreBackend {
     }
 
     fn mark_workspace(&self, workspace: &str) -> Result<String, String> {
-        lifecycle::clean_mark(&config()?, Some(workspace), false, false)
+        lifecycle::clean_mark(&self.config()?, Some(workspace), false, false)
             .map_err(|err| err.to_string())
     }
 
@@ -51,17 +65,17 @@ impl Backend for CoreBackend {
             task_id: Some(task.to_string()),
             ..HerdrOptions::default()
         };
-        seat::herdr(&config()?, &options)
+        seat::herdr(&self.config()?, &options)
             .map(|_| ())
             .map_err(|err| err.to_string())
     }
 
     fn add_task(&self, title: &str) -> Result<String, String> {
-        let id = ops::task_add(&config()?, title, None, "").map_err(|err| err.to_string())?;
+        let id = ops::task_add(&self.config()?, title, None, "").map_err(|err| err.to_string())?;
         Ok(format!("rookery: task '{id}' added ({title})"))
     }
 
     fn assign(&self, task: &str, workspace: &str) -> Result<String, String> {
-        ops::task_assign(&config()?, task, workspace, false).map_err(|err| err.to_string())
+        ops::task_assign(&self.config()?, task, workspace, false).map_err(|err| err.to_string())
     }
 }
