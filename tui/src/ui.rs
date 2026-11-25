@@ -1224,6 +1224,21 @@ mod tests {
     }
 
     #[test]
+    fn parent_picker_lists_roots_and_a_clear_option() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("worker-a"));
+        press(&mut app, KeyCode::Char('p'));
+        let text = render_text(&mut app, 160, 50);
+        assert!(text.contains("parent of worker-a"));
+        assert!(text.contains("clear parent"));
+        assert!(text.contains("Lead the release"));
+    }
+
+    #[test]
     fn golden_200x60() {
         let mut app = App::new_at(golden_board(), NOW);
         press(&mut app, KeyCode::Char('l'));
