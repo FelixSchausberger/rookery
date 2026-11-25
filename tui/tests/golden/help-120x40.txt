@@ -12,6 +12,7 @@ Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Bloc
                             │  n       create a backlog task                               │
                             │  s       start a seat for a task with no workspace           │
                             │  a       assign the selected ungrouped workspace             │
+                            │  p       set or clear the selected task's parent             │
                             │  /       filter cards                                        │
                             │  f       cycle filter presets                                │
                             │  space   expand or collapse the selected card                │
@@ -28,7 +29,6 @@ Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Bloc
                             │  o       cycle sort                                          │
                             │  i       toggle the detail pane                              │
                             │  r       refresh now                                         │
-                            │  ?       close this help                                     │
                             └──────────────────────────────────────────────────────────────┘
 
 

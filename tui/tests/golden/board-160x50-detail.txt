@@ -1,6 +1,6 @@
 rookery board  6 cards  6 workspaces   live 1  session 0  wait 1  conflict 0  stale 1   refreshed 0s
 Backlog 1 · 0ws           Active 2 · 3ws           Review 1 · 1ws            Blocked 1 · 1ws          To Clean 1 · 1ws          ┌detail────────────────────────┐
-▌ Plan the next release   ▌ Fix the board cac… (2) ▌ Polish the cards (1)    ▌ Wait for the desi… (1) ▌ Clean the old seat (1)  │enter open  d mark            │
+▌ Plan the next release   ▌ Fix the board cac… (2) ▌ Polish the cards (1)    ▌ Wait for the desi… (1) ▌ Clean the old seat (1)  │enter open  d mark  p parent  │
   press s to start a seat   1 unpushed · 1 merged…   1 merged · session "Bo…   1 empty · waiting 3d …   1 unpushed · clean 2h … │#polish                       │
                           ▌ Loose experiment       ▸ ws-polish                                                                  │Polish the cards              │
                             1 unpushed               merged 1h                                                                  │created 2d · updated 30m      │
