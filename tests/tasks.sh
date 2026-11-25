@@ -312,7 +312,6 @@ if rookery task archive lifecycle-work 2>/dev/null; then fail "archive accepted 
 rookery rm --force zeta >/dev/null
 printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "lifecycle-work" and .status == "archived")' >/dev/null 2>&1 || fail "discarding the last workspace did not archive the done task"
 
-
 # --- parent tasks --------------------------------------------------------
 rookery task add --id epic "Epic" >/dev/null
 rookery task add --id leaf --parent epic "Leaf" >/dev/null

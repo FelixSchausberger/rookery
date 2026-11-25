@@ -3,13 +3,13 @@
 use crate::app::{App, Mode};
 use crate::model::{Board, Hold, Lane, State, Workspace};
 use crate::view::{dim_style, relative_age, title_style, truncate, wrap};
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -901,9 +901,9 @@ mod tests {
     use crate::model::{Board, Clean, Hold, Session, State, Task, Wait, Workspace};
     use crate::view::{CardKey, Palette};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
-    use ratatui::Terminal;
 
     const NOW: i64 = 1_700_000_000;
 

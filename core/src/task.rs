@@ -190,13 +190,7 @@ impl Store {
         map
     }
 
-    pub fn add(
-        &self,
-        id: &str,
-        title: &str,
-        notes: &str,
-        parent: Option<&str>,
-    ) -> Result<()> {
+    pub fn add(&self, id: &str, title: &str, notes: &str, parent: Option<&str>) -> Result<()> {
         self.mutate(|store| {
             if store.tasks.iter().any(|task| task.id == id) {
                 return Err(Error::refused(format!("rookery: task {id} already exists")));

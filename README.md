@@ -62,31 +62,31 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 
 ## Commands
 
-| command                                                             | effect                                                         |
-| ------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `rookery <task> [-- <opencode args>]`                               | create a workspace and start OpenCode there                    |
-| `rookery herdr [--json] [--no-focus] [--wait] [--task ID] [<task>]` | create a workspace in a new herdr tab and start OpenCode       |
-| `rookery tab <task>`                                                | create a workspace in a new zellij tab                         |
-| `rookery seat [--json]`                                             | print the calling agent's herdr workspace, tab, and pane       |
-| `rookery title <text...>`                                           | claim the current seat: describe, rename the workspace and tab |
-| `rookery ls [--counts\|--board\|--json] [--refresh]`                | classify every workspace                                       |
+| command                                                              | effect                                                         |
+| -------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `rookery <task> [-- <opencode args>]`                                | create a workspace and start OpenCode there                    |
+| `rookery herdr [--json] [--no-focus] [--wait] [--task ID] [<task>]`  | create a workspace in a new herdr tab and start OpenCode       |
+| `rookery tab <task>`                                                 | create a workspace in a new zellij tab                         |
+| `rookery seat [--json]`                                              | print the calling agent's herdr workspace, tab, and pane       |
+| `rookery title <text...>`                                            | claim the current seat: describe, rename the workspace and tab |
+| `rookery ls [--counts\|--board\|--json] [--refresh]`                 | classify every workspace                                       |
 | `rookery task add [--id ID] [--parent ID] [--notes TEXT] <title...>` | create a backlog task or a child of an existing task           |
-| `rookery task parent [--clear] <child> [<parent>]`                  | set or clear a task's parent                                   |
-| `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                       |
-| `rookery task list [--json]`                                        | list tasks and their workspaces                                |
-| `rookery task done [--recursive] <task>`                            | lead-only: mark the workspaces, set the task done              |
-| `rookery task note <task> <text...>`                                | append a decision or follow-up to the task's notes             |
-| `rookery task archive <task>`                                       | archive a task whose workspaces are gone                       |
-| `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                         |
-| `rookery clean --unmark [--current\|<workspace>]`                   | clear the cleanup mark                                         |
-| `rookery clean --apply`                                             | remove marked workspaces that are safe to remove               |
-| `rookery open <workspace\|task>`                                    | focus a workspace's seat                                       |
-| `rookery wait <task> [reason...]`                                   | park a workspace; gc keeps it until `rookery go`               |
-| `rookery go <task>`                                                 | release a parked workspace                                     |
-| `rookery done [--force] <task>`                                     | remove a finished workspace                                    |
-| `rookery rm [--force] <task>`                                       | remove a workspace                                             |
-| `rookery gc`                                                        | reclaim empty and merged workspaces idle past the age gate     |
-| `rookery reap [--dry-run]`                                          | export and delete conversations whose workspace is gone        |
+| `rookery task parent [--clear] <child> [<parent>]`                   | set or clear a task's parent                                   |
+| `rookery task assign [--move] <task> <workspace>`                    | group an existing workspace under a task                       |
+| `rookery task list [--json]`                                         | list tasks and their workspaces                                |
+| `rookery task done [--recursive] <task>`                             | lead-only: mark the workspaces, set the task done              |
+| `rookery task note <task> <text...>`                                 | append a decision or follow-up to the task's notes             |
+| `rookery task archive <task>`                                        | archive a task whose workspaces are gone                       |
+| `rookery clean [--current\|<workspace>]`                             | mark a workspace for the cleanup sweep                         |
+| `rookery clean --unmark [--current\|<workspace>]`                    | clear the cleanup mark                                         |
+| `rookery clean --apply`                                              | remove marked workspaces that are safe to remove               |
+| `rookery open <workspace\|task>`                                     | focus a workspace's seat                                       |
+| `rookery wait <task> [reason...]`                                    | park a workspace; gc keeps it until `rookery go`               |
+| `rookery go <task>`                                                  | release a parked workspace                                     |
+| `rookery done [--force] <task>`                                      | remove a finished workspace                                    |
+| `rookery rm [--force] <task>`                                        | remove a workspace                                             |
+| `rookery gc`                                                         | reclaim empty and merged workspaces idle past the age gate     |
+| `rookery reap [--dry-run]`                                           | export and delete conversations whose workspace is gone        |
 
 `rookery help` prints the usage and never creates a workspace; without it the
 external-subcommand fallback would treat `help` as a task name.
