@@ -54,22 +54,16 @@ fn run(
     app: &mut App,
     backend: Arc<dyn Backend>,
 ) -> io::Result<()> {
-    let (tx, rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+    let (request_tx, request_rx) = mpsc::channel();
     let loader = Arc::clone(&backend);
-    thread::spawn(move || {
-        loop {
-            thread::sleep(REFRESH);
-            if tx.send(loader.load()).is_err() {
-                break;
-            }
-        }
-    });
+    thread::spawn(move || load_loop(loader, request_rx, result_tx, REFRESH));
 
     loop {
         app.tick(now_secs());
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        while let Ok(result) = rx.try_recv() {
+        while let Ok(result) = result_rx.try_recv() {
             match result {
                 Ok(board) => app.set_board(board),
                 Err(err) => app.set_load_error(err),
@@ -90,7 +84,7 @@ fn run(
         };
         match action {
             Action::Quit => return Ok(()),
-            Action::Refresh => reload(app, &backend),
+            Action::Refresh => request_refresh(&request_tx),
             action => {
                 let result = match &action {
                     Action::Open(target) => backend.open(target),
@@ -113,7 +107,7 @@ fn run(
                         } else {
                             app.set_status(format!("{label} {detail}"));
                         }
-                        reload(app, &backend);
+                        request_refresh(&request_tx);
                     }
                     Err(err) => app.set_error(err),
                 }
@@ -122,11 +116,28 @@ fn run(
     }
 }
 
-fn reload(app: &mut App, backend: &Arc<dyn Backend>) {
-    match backend.load() {
-        Ok(board) => app.set_board(board),
-        Err(err) => app.set_load_error(err),
+/// One loader thread serves the timer and explicit refreshes. A request wakes
+/// the two-second wait; requests that pile up while a load is running coalesce
+/// into the next pass. The input loop never blocks on jj.
+fn load_loop(
+    backend: Arc<dyn Backend>,
+    requests: mpsc::Receiver<()>,
+    results: mpsc::Sender<Result<Board, String>>,
+    refresh: Duration,
+) {
+    loop {
+        let requested = requests.recv_timeout(refresh).is_ok();
+        if requested {
+            while requests.try_recv().is_ok() {}
+        }
+        if results.send(backend.load()).is_err() {
+            break;
+        }
     }
+}
+
+fn request_refresh(requests: &mpsc::Sender<()>) {
+    let _ = requests.send(());
 }
 
 /// A panic while the terminal is in raw mode would leave the pane unusable;
@@ -138,4 +149,71 @@ fn install_panic_hook() {
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
         original(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Fake {
+        loads: Arc<AtomicUsize>,
+    }
+
+    impl Backend for Fake {
+        fn load(&self) -> Result<Board, String> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            Ok(Board::default())
+        }
+
+        fn open(&self, _target: &str) -> Result<String, String> {
+            unreachable!()
+        }
+
+        fn mark_task(&self, _task: &str) -> Result<String, String> {
+            unreachable!()
+        }
+
+        fn mark_workspace(&self, _workspace: &str) -> Result<String, String> {
+            unreachable!()
+        }
+
+        fn start_seat(&self, _task: &str) -> Result<(), String> {
+            unreachable!()
+        }
+
+        fn add_task(&self, _title: &str) -> Result<String, String> {
+            unreachable!()
+        }
+
+        fn assign(&self, _task: &str, _workspace: &str) -> Result<String, String> {
+            unreachable!()
+        }
+
+        fn set_parent(&self, _child: &str, _parent: Option<&str>) -> Result<String, String> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_request_wakes_the_loader_and_dropping_the_receiver_stops_it() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let backend: Arc<dyn Backend> = Arc::new(Fake {
+            loads: Arc::clone(&loads),
+        });
+        let (request_tx, request_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            load_loop(backend, request_rx, result_tx, Duration::from_millis(20));
+        });
+
+        request_tx.send(()).unwrap();
+        let result = result_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(result.is_ok());
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+
+        drop(request_tx);
+        drop(result_rx);
+        handle.join().unwrap();
+    }
 }
