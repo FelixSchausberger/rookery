@@ -473,6 +473,8 @@ impl Card {
         } else {
             String::new()
         };
+        let title_width = available.saturating_sub(display_width(&count));
+        let heading = format!("{}{count}", truncate(title, title_width));
         let style = if selected {
             Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
@@ -481,7 +483,7 @@ impl Card {
         let mut lines = vec![Line::from(vec![
             Span::styled("▌", accent),
             Span::raw(" "),
-            Span::styled(truncate(&format!("{title}{count}"), available), style),
+            Span::styled(heading, style),
         ])];
         let mut detail = self.badges(available).unwrap_or_default();
         if let Some(context) = self.context() {
