@@ -982,11 +982,7 @@ pub fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 }
 
 fn plural_s(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if count == 1 { "" } else { "s" }
 }
 
 pub fn relative_age(seconds: i64) -> String {
@@ -1111,7 +1107,9 @@ mod tests {
         let order: Vec<&str> = cards.iter().filter_map(|card| card.id()).collect();
         assert_eq!(
             order,
-            vec!["waiting", "conflict", "unpushed", "live", "inflight", "merged"]
+            vec![
+                "waiting", "conflict", "unpushed", "live", "inflight", "merged"
+            ]
         );
     }
 
@@ -1305,9 +1303,11 @@ mod tests {
         let lanes = build(&board, 10_000, Filter::All, "live", Sort::Title);
         let cards: usize = lanes.iter().map(|lane| lane.cards.len()).sum();
         assert_eq!(cards, 1);
-        assert!(lanes
-            .iter()
-            .any(|lane| lane.cards.iter().any(|card| card.id() == Some("live"))));
+        assert!(
+            lanes
+                .iter()
+                .any(|lane| lane.cards.iter().any(|card| card.id() == Some("live")))
+        );
     }
 
     #[test]
