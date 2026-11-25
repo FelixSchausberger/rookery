@@ -982,11 +982,7 @@ pub fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 }
 
 fn plural_s(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if count == 1 { "" } else { "s" }
 }
 
 pub fn relative_age(seconds: i64) -> String {

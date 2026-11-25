@@ -159,10 +159,12 @@ pub fn task_done(config: &Config, task: &str, recursive: bool) -> Result<Vec<Lin
     // The lead owns the lifecycle decision. A worker runs inside one of the
     // task's workspaces, so it cannot declare the whole task finished.
     if let Some(current) = jj::workspace_at_cwd(config)? {
-        if subtree
-            .iter()
-            .any(|entry| entry.workspaces.iter().any(|workspace| workspace == &current))
-        {
+        if subtree.iter().any(|entry| {
+            entry
+                .workspaces
+                .iter()
+                .any(|workspace| workspace == &current)
+        }) {
             return Err(Error::refused(format!(
                 "rookery task done: '{current}' is grouped under '{task}'; a worker cannot finish its own task. Run this from the lead's ungrouped workspace."
             )));
@@ -217,7 +219,10 @@ pub fn task_done(config: &Config, task: &str, recursive: bool) -> Result<Vec<Lin
             store.set_status(&entry.id, task::ARCHIVED)?;
             lines.push(Line {
                 stderr: false,
-                text: format!("rookery: task '{}' archived (no workspaces remain)", entry.id),
+                text: format!(
+                    "rookery: task '{}' archived (no workspaces remain)",
+                    entry.id
+                ),
             });
         } else {
             store.set_status(&entry.id, task::DONE)?;
