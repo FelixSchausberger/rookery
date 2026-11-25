@@ -48,6 +48,9 @@ pub struct Config {
     pub gc_age: i64,
     pub gc_empty_age: i64,
     pub gc_session_age: i64,
+    /// Child subagent transcripts older than this are pruned by `reap`.
+    /// Top-level conversations are never pruned automatically.
+    pub reap_child_age: i64,
     pub wait_stale_days: i64,
     pub task_stale_days: i64,
     pub live_exclude: Regex,
@@ -83,6 +86,7 @@ impl Config {
             gc_age: env_i64("ROOKERY_GC_AGE", 86400),
             gc_empty_age: env_i64("ROOKERY_GC_EMPTY_AGE", 21600),
             gc_session_age: env_i64("ROOKERY_GC_SESSION_AGE", 604800),
+            reap_child_age: env_i64("ROOKERY_REAP_CHILD_AGE", 604800),
             wait_stale_days: env_i64("ROOKERY_WAIT_STALE_DAYS", 14),
             task_stale_days: env_i64("ROOKERY_TASK_STALE_DAYS", 14),
             live_exclude,

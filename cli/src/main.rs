@@ -33,12 +33,12 @@ Usage:
   rookery done [--force] <task>
   rookery rm [--force] <task>
   rookery gc
-  rookery reap [--dry-run]
+  rookery reap [--dry-run] [--roots]
 
 Environment: ROOKERY_BASE, ROOKERY_WS_PREFIX, ROOKERY_TRUNK, ROOKERY_V2,
 ROOKERY_GC_AGE, ROOKERY_GC_EMPTY_AGE, ROOKERY_GC_SESSION_AGE,
-ROOKERY_WAIT_STALE_DAYS, ROOKERY_TASK_STALE_DAYS, ROOKERY_LIVE_EXCLUDE,
-ROOKERY_BOARD_JOBS, ROOKERY_NO_MAINT, ROOKERY_TASK_ASSIGN,
+ROOKERY_REAP_CHILD_AGE, ROOKERY_WAIT_STALE_DAYS, ROOKERY_TASK_STALE_DAYS,
+ROOKERY_LIVE_EXCLUDE, ROOKERY_BOARD_JOBS, ROOKERY_NO_MAINT, ROOKERY_TASK_ASSIGN,
 ROOKERY_SESSION_ARCHIVE, ROOKERY_AGENT_BIN,
 ROOKERY_HOOK_{PRE,POST}_{CREATE,DELETE}.
 The OCWS_* names are read when the ROOKERY_* name is unset.
@@ -152,10 +152,14 @@ enum Cmd {
     },
     /// Reclaim empty and merged workspaces past the age gate.
     Gc,
-    /// Export and delete conversations whose workspace is gone.
+    /// Prune child subagent transcripts; with --roots, also export and delete
+    /// top-level conversations whose workspace is gone.
     Reap {
         #[arg(long)]
         dry_run: bool,
+        /// Also delete dead top-level conversations. Never the default.
+        #[arg(long)]
+        roots: bool,
     },
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -386,8 +390,8 @@ fn run(cli: Cli) -> Result<()> {
             print_warnings(&warnings);
             Ok(())
         }
-        Cmd::Reap { dry_run } => {
-            let lines = lifecycle::reap(&config, dry_run)?;
+        Cmd::Reap { dry_run, roots } => {
+            let lines = lifecycle::reap(&config, dry_run, roots)?;
             print_lines(&lines);
             print_warnings(&warnings);
             Ok(())
