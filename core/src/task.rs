@@ -348,7 +348,7 @@ impl Store {
             if store
                 .tasks
                 .iter()
-                .any(|task| task.parent.as_deref() == Some(id) && task.status == OPEN)
+                .any(|task| task.parent.as_deref() == Some(id) && task.status != ARCHIVED)
             {
                 return Ok(false);
             }
@@ -369,10 +369,10 @@ impl Store {
             if store
                 .tasks
                 .iter()
-                .any(|task| task.parent.as_deref() == Some(id) && task.status == OPEN)
+                .any(|task| task.parent.as_deref() == Some(id) && task.status != ARCHIVED)
             {
                 return Err(Error::refused(format!(
-                    "rookery: task {id} still has open child tasks; archive them first"
+                    "rookery: task {id} still has child tasks; archive them first"
                 )));
             }
             if !target.workspaces.is_empty() {
