@@ -19,10 +19,11 @@ Usage:
   rookery seat [--json]
   rookery title <text...>
   rookery ls [--counts|--board|--json] [--refresh]
-  rookery task add <title...> [--id ID] [--notes TEXT]
+  rookery task add [--id ID] [--notes TEXT] <title...>
   rookery task assign [--move] <task> <workspace>
   rookery task list [--json]
   rookery task done <task>
+  rookery task note <task> <text...>
   rookery task archive <task>
   rookery clean [--current|<workspace>] [--unmark]
   rookery clean --apply
@@ -36,9 +37,10 @@ Usage:
 
 Environment: ROOKERY_BASE, ROOKERY_WS_PREFIX, ROOKERY_TRUNK, ROOKERY_V2,
 ROOKERY_GC_AGE, ROOKERY_GC_EMPTY_AGE, ROOKERY_GC_SESSION_AGE,
-ROOKERY_WAIT_STALE_DAYS, ROOKERY_LIVE_EXCLUDE, ROOKERY_BOARD_JOBS,
-ROOKERY_NO_MAINT, ROOKERY_TASK_ASSIGN, ROOKERY_SESSION_ARCHIVE,
-ROOKERY_AGENT_BIN, ROOKERY_HOOK_{PRE,POST}_{CREATE,DELETE}.
+ROOKERY_WAIT_STALE_DAYS, ROOKERY_TASK_STALE_DAYS, ROOKERY_LIVE_EXCLUDE,
+ROOKERY_BOARD_JOBS, ROOKERY_NO_MAINT, ROOKERY_TASK_ASSIGN,
+ROOKERY_SESSION_ARCHIVE, ROOKERY_AGENT_BIN,
+ROOKERY_HOOK_{PRE,POST}_{CREATE,DELETE}.
 The OCWS_* names are read when the ROOKERY_* name is unset.
 ";
 
@@ -181,6 +183,11 @@ enum TaskCmd {
     },
     Done {
         task: String,
+    },
+    Note {
+        task: String,
+        #[arg(required = true, trailing_var_arg = true)]
+        text: Vec<String>,
     },
     Archive {
         task: String,
@@ -434,6 +441,11 @@ fn run_task(config: &Config, command: TaskCmd) -> Result<()> {
         TaskCmd::Done { task } => {
             let lines = rookery_core::ops::task_done(config, &task)?;
             print_lines(&lines);
+            Ok(())
+        }
+        TaskCmd::Note { task, text } => {
+            let message = rookery_core::ops::task_note(config, &task, &text.join(" "))?;
+            println!("{message}");
             Ok(())
         }
         TaskCmd::Archive { task } => {
