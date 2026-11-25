@@ -30,6 +30,9 @@ inputs: {
       "ROOKERY_GC_SESSION_AGE"
       (toString cfg.gc.sessionAge)
       "--set-default"
+      "ROOKERY_REAP_CHILD_AGE"
+      (toString cfg.gc.reapChildAge)
+      "--set-default"
       "ROOKERY_WAIT_STALE_DAYS"
       (toString cfg.waitStaleDays)
       "--set-default"
@@ -176,6 +179,16 @@ in {
         default = 604800;
         description = "Seconds a recent agent session keeps its workspace out of gc.";
       };
+
+      reapChildAge = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 604800;
+        description = ''
+          Seconds a child subagent transcript must sit idle before `reap`
+          prunes it. Top-level conversations are never pruned by the default
+          pass; only `reap --roots` deletes one whose workspace is gone.
+        '';
+      };
     };
 
     finalPackage = lib.mkOption {
@@ -236,8 +249,8 @@ in {
           [ -d "$repo" ] || exit 0
           cd "$repo"
           ${cfg.finalPackage}/bin/rookery gc
-          # gc removes the stale directories; the reaper exports and deletes
-          # the conversations that pointed at them.
+          # gc removes the stale directories; the reaper prunes child
+          # subagent transcripts and keeps every top-level conversation.
           ${cfg.finalPackage}/bin/rookery reap
         '');
       };

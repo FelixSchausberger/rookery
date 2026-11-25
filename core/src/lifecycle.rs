@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use crate::jj::{self, State};
 use crate::session::{SessionProvider, SqliteSessions};
 use crate::task::{self, Store};
-use crate::util::{now_secs, realpath_m, remove_with_rip, touched_since, valid_task};
+use crate::util::{now_ms, now_secs, realpath_m, remove_with_rip, touched_since, valid_task};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -636,10 +636,54 @@ fn archive_slug(value: &str) -> String {
     }
 }
 
-/// Export and delete conversations whose working directory is gone. The
-/// export is written before the delete, and one failed member abandons the
-/// whole tree, so a conversation is never deleted without a readable archive.
-pub fn reap(config: &Config, dry_run: bool) -> Result<Vec<Line>> {
+/// Export every member of `top`'s tree into the archive directory named
+/// `archive_id`, validating each export as JSON. Nothing is deleted until the
+/// whole tree is readable, so a failed export keeps the conversation.
+fn export_tree(
+    config: &Config,
+    provider: &SqliteSessions,
+    top: &str,
+    archive_id: &str,
+) -> std::result::Result<(), String> {
+    if !valid_session_id(top) || !valid_session_id(archive_id) {
+        return Err("unexpected session id".to_string());
+    }
+    let members = provider.tree_members(top);
+    if members.is_empty() {
+        return Err("no readable members".to_string());
+    }
+    let archive = config.session_archive.join(archive_id);
+    fs::create_dir_all(&archive)
+        .map_err(|err| format!("cannot create {}: {err}", archive.display()))?;
+    for (member, slug) in &members {
+        if !valid_session_id(member) {
+            return Err(format!("unexpected member id '{member}'"));
+        }
+        let output = Command::new(&config.agent_bin)
+            .args(["session", "export", member])
+            .output()
+            .map_err(|err| format!("cannot run {}: {err}", config.agent_bin))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("export of {member} failed: {}", detail.trim()));
+        }
+        if serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err() {
+            return Err(format!("export of {member} is not JSON"));
+        }
+        let path = archive.join(format!("{member}-{}.json", archive_slug(slug)));
+        fs::write(&path, &output.stdout)
+            .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Prune child subagent transcripts and, only with `roots`, export and delete
+/// top-level conversations whose working directory is gone. A top-level
+/// conversation is the person's review record: the default pass never deletes
+/// one. The export is written before any delete, and one failed member abandons
+/// the whole tree, so a conversation is never deleted without a readable
+/// archive.
+pub fn reap(config: &Config, dry_run: bool, roots: bool) -> Result<Vec<Line>> {
     let mut lines = Vec::new();
     if !config.session_db.is_file() {
         lines.push(Line::out(format!(
@@ -649,151 +693,136 @@ pub fn reap(config: &Config, dry_run: bool) -> Result<Vec<Line>> {
         return Ok(lines);
     }
     let provider = SqliteSessions::new(config.session_db.clone());
-    let roots = provider.roots();
-    if roots.is_empty() {
+    let top_level = provider.roots();
+    if top_level.is_empty() {
         lines.push(Line::out("rookery reap: no top-level sessions to inspect"));
         return Ok(lines);
     }
-    let workspaces: Vec<PathBuf> = jj::workspace_list()?
-        .into_iter()
-        .map(|entry| realpath_m(entry.root.as_deref().unwrap_or(&config.ws_dir(&entry.name))))
-        .collect();
-    lines.push(Line::out(format!(
-        "rookery reap: archive {}",
-        config.session_archive.display()
-    )));
+    let top_count = top_level.len();
 
     let mut exported = 0;
     let mut kept = 0;
-    for root in roots {
-        if !valid_session_id(&root.id) {
-            lines.push(Line::err(format!(
-                "rookery reap: keeping '{}' (unexpected session id)",
-                root.id
-            )));
-            kept += 1;
-            continue;
-        }
-        let dir = realpath_m(Path::new(&root.directory));
-        if dir.is_dir() {
-            continue;
-        }
-        // A session started in a subdirectory of a live workspace is not dead
-        // just because that subdirectory is gone.
-        if workspaces
-            .iter()
-            .any(|workspace| dir == *workspace || dir.starts_with(workspace))
-        {
-            continue;
-        }
-        let title = root
-            .title
-            .as_deref()
-            .unwrap_or("(no title)")
-            .replace('\n', " ");
-        if dry_run {
-            lines.push(Line::out(format!(
-                "rookery reap: would export and delete '{}' ({title})",
-                root.id
-            )));
-            continue;
-        }
-        let members = provider.tree_members(&root.id);
-        if members.is_empty() {
-            lines.push(Line::err(format!(
-                "rookery reap: keeping '{}' (no readable members)",
-                root.id
-            )));
-            kept += 1;
-            continue;
-        }
-        let archive = config.session_archive.join(&root.id);
-        if let Err(err) = fs::create_dir_all(&archive) {
-            lines.push(Line::err(format!(
-                "rookery reap: keeping '{}' (cannot create {}: {err})",
-                root.id,
-                archive.display()
-            )));
-            kept += 1;
-            continue;
-        }
-        let mut complete = true;
-        for (member, slug) in &members {
-            if !valid_session_id(member) {
-                lines.push(Line::err(format!(
-                    "rookery reap: keeping '{}' (unexpected member id '{member}')",
-                    root.id
-                )));
-                complete = false;
-                break;
-            }
-            let output = match Command::new(&config.agent_bin)
-                .args(["session", "export", member])
-                .output()
-            {
-                Ok(output) => output,
-                Err(err) => {
-                    lines.push(Line::err(format!(
-                        "rookery reap: cannot run {}: {err}",
-                        config.agent_bin
-                    )));
-                    complete = false;
-                    break;
-                }
-            };
-            if !output.status.success() {
-                let detail = String::from_utf8_lossy(&output.stderr);
+    let mut roots_deleted = 0;
+
+    if !roots {
+        let age = config.reap_child_age.max(0);
+        let cutoff = now_ms() - age * 1000;
+        let candidates = provider.prune_candidates(cutoff);
+        lines.push(Line::out(format!(
+            "rookery reap: pruning child subagent transcripts older than {age}s; top-level conversations are kept"
+        )));
+        for child in candidates {
+            let label = child
+                .title
+                .as_deref()
+                .unwrap_or(&child.slug)
+                .replace('\n', " ");
+            if dry_run {
                 lines.push(Line::out(format!(
-                    "rookery reap: keeping '{}' (export of {member} failed: {})",
-                    root.id,
-                    detail.trim()
+                    "rookery reap: would export and delete child '{}' ({label}) of '{}'",
+                    child.id, child.root
                 )));
-                complete = false;
-                break;
+                continue;
             }
-            if serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err() {
+            if let Err(reason) = export_tree(config, &provider, &child.id, &child.root) {
+                kept += 1;
                 lines.push(Line::err(format!(
-                    "rookery reap: keeping '{}' (export of {member} is not JSON)",
+                    "rookery reap: keeping child '{}' ({reason})",
+                    child.id
+                )));
+                continue;
+            }
+            let deleted = Command::new(&config.agent_bin)
+                .args(["session", "delete", &child.id])
+                .status()
+                .is_ok_and(|status| status.success());
+            if deleted {
+                exported += 1;
+                lines.push(Line::out(format!(
+                    "rookery reap: exported and deleted child '{}' ({label}) of '{}'",
+                    child.id, child.root
+                )));
+            } else {
+                kept += 1;
+                lines.push(Line::err(format!(
+                    "rookery reap: export kept for child '{}' but delete failed",
+                    child.id
+                )));
+            }
+        }
+    } else {
+        let workspaces: Vec<PathBuf> = jj::workspace_list()?
+            .into_iter()
+            .map(|entry| realpath_m(entry.root.as_deref().unwrap_or(&config.ws_dir(&entry.name))))
+            .collect();
+        lines.push(Line::out(
+            "rookery reap: explicit --roots pass; live top-level conversations are kept",
+        ));
+        for root in &top_level {
+            let label = root
+                .title
+                .as_deref()
+                .unwrap_or("(no title)")
+                .replace('\n', " ");
+            if !valid_session_id(&root.id) {
+                lines.push(Line::err(format!(
+                    "rookery reap: keeping '{}' (unexpected session id)",
                     root.id
                 )));
-                complete = false;
-                break;
+                kept += 1;
+                continue;
             }
-            let path = archive.join(format!("{member}-{}.json", archive_slug(slug)));
-            if let Err(err) = fs::write(&path, &output.stdout) {
-                lines.push(Line::err(format!(
-                    "rookery reap: keeping '{}' (cannot write {}: {err})",
-                    root.id,
-                    path.display()
+            let dir = realpath_m(Path::new(&root.directory));
+            if dir.is_dir() {
+                continue;
+            }
+            // A session started in a subdirectory of a live workspace is not
+            // dead just because that subdirectory is gone.
+            if workspaces
+                .iter()
+                .any(|workspace| dir == *workspace || dir.starts_with(workspace))
+            {
+                continue;
+            }
+            if dry_run {
+                lines.push(Line::out(format!(
+                    "rookery reap: would export and delete '{}' ({label})",
+                    root.id
                 )));
-                complete = false;
-                break;
+                continue;
             }
-        }
-        if !complete {
-            kept += 1;
-            continue;
-        }
-        let deleted = Command::new(&config.agent_bin)
-            .args(["session", "delete", &root.id])
-            .status()
-            .is_ok_and(|status| status.success());
-        if deleted {
-            exported += 1;
-            lines.push(Line::out(format!(
-                "rookery reap: exported and deleted '{}' ({title})",
-                root.id
-            )));
-        } else {
-            kept += 1;
-            lines.push(Line::err(format!(
-                "rookery reap: export kept for '{}' but delete failed",
-                root.id
-            )));
+            if let Err(reason) = export_tree(config, &provider, &root.id, &root.id) {
+                kept += 1;
+                lines.push(Line::err(format!(
+                    "rookery reap: keeping '{}' ({reason})",
+                    root.id
+                )));
+                continue;
+            }
+            let deleted = Command::new(&config.agent_bin)
+                .args(["session", "delete", &root.id])
+                .status()
+                .is_ok_and(|status| status.success());
+            if deleted {
+                exported += 1;
+                roots_deleted += 1;
+                lines.push(Line::out(format!(
+                    "rookery reap: exported and deleted '{}' ({label})",
+                    root.id
+                )));
+            } else {
+                kept += 1;
+                lines.push(Line::err(format!(
+                    "rookery reap: export kept for '{}' but delete failed",
+                    root.id
+                )));
+            }
         }
     }
+
     lines.push(Line::out(format!(
-        "rookery reap: {exported} exported and deleted, {kept} kept"
+        "rookery reap: {exported} conversations exported and deleted, {kept} kept; {} top-level conversations kept",
+        top_count - roots_deleted
     )));
     Ok(lines)
 }

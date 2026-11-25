@@ -20,6 +20,17 @@ pub struct SessionRoot {
     pub updated: Option<i64>,
 }
 
+/// A direct child of a top-level conversation, with the newest activity in
+/// its whole subtree. A direct child whose subtree has a recent member is not
+/// a prune candidate: a resumed grandchild keeps its parent alive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildSession {
+    pub id: String,
+    pub root: String,
+    pub title: Option<String>,
+    pub slug: String,
+}
+
 /// The agent-session provider. gc asks for directories, the JSON board asks
 /// for the conversation title and last update. When the trait is absent the
 /// board falls back to the process and touch checks.
@@ -57,7 +68,8 @@ impl SqliteSessions {
         now_ms() - (age_seconds.max(0) * 1000)
     }
 
-    /// Every top-level conversation, oldest first. A schema that cannot answer
+    /// Every top-level conversation, oldest first. Archived roots are not
+    /// candidates: archiving is an explicit keep. A schema that cannot answer
     /// the query yields an empty list, so the reaper never deletes on a guess.
     pub fn roots(&self) -> Vec<SessionRoot> {
         let Some(connection) = self.open() else {
@@ -65,7 +77,8 @@ impl SqliteSessions {
         };
         let mut statement = match connection.prepare(
             "select id, directory, title, time_updated from session_v2 \
-             where parent_id is null and directory is not null and directory <> '' \
+             where parent_id is null and time_archived is null \
+             and directory is not null and directory <> '' \
              order by time_updated asc",
         ) {
             Ok(statement) => statement,
@@ -77,6 +90,50 @@ impl SqliteSessions {
                 directory: row.get::<_, String>(1)?,
                 title: row.get::<_, Option<String>>(2)?,
                 updated: row.get::<_, Option<i64>>(3)?,
+            })
+        });
+        let Ok(rows) = rows else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
+    }
+
+    /// Direct children of live top-level conversations whose whole subtree
+    /// has been idle before `cutoff_ms`, and whose root is equally old. A
+    /// child with any recent descendant is kept, and an archived root or child
+    /// is never a candidate.
+    pub fn prune_candidates(&self, cutoff_ms: i64) -> Vec<ChildSession> {
+        let Some(connection) = self.open() else {
+            return Vec::new();
+        };
+        let mut statement = match connection.prepare(
+            "with recursive tree(top, id, updated) as (
+               select child.id, child.id, child.time_updated
+               from session_v2 child join session_v2 root on root.id = child.parent_id
+               where root.parent_id is null
+                 and root.time_archived is null
+                 and child.time_archived is null
+               union all
+               select tree.top, session.id, session.time_updated
+               from session_v2 session join tree on session.parent_id = tree.id
+             )
+             select tree.top, root.id, child.title, coalesce(child.slug, 'session')
+             from tree
+             join session_v2 child on child.id = tree.top
+             join session_v2 root on root.id = child.parent_id
+             group by tree.top
+             having max(tree.updated) < ?1 and coalesce(root.time_updated, 0) < ?1
+             order by max(tree.updated) asc",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
+        let rows = statement.query_map([cutoff_ms], |row| {
+            Ok(ChildSession {
+                id: row.get::<_, String>(0)?,
+                root: row.get::<_, String>(1)?,
+                title: row.get::<_, Option<String>>(2)?,
+                slug: row.get::<_, String>(3)?,
             })
         });
         let Ok(rows) = rows else {
@@ -232,6 +289,46 @@ mod tests {
             ]
         );
         assert!(provider.tree_members("ses_missing").is_empty());
+    }
+
+    #[test]
+    fn prune_candidates_keep_roots_recent_subtrees_and_archived_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("opencode.db");
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "create table session_v2 (
+                   id text primary key,
+                   parent_id text,
+                   directory text,
+                   title text,
+                   slug text,
+                   time_updated integer,
+                   time_archived integer
+                 );
+                 insert into session_v2 values
+                   ('ses_old_root', null, '/ws/alpha', 'Old root', 'old-root', 1000, null),
+                   ('ses_old_child', 'ses_old_root', '/ws/alpha', 'Old child', 'old-child', 2000, null),
+                   ('ses_old_grandchild', 'ses_old_child', '/ws/alpha', null, 'old-grandchild', 3000, null),
+                   ('ses_new_root', null, '/ws/alpha', 'New root', 'new-root', 500000, null),
+                   ('ses_new_child', 'ses_new_root', '/ws/alpha', null, 'new-child', 4000, null),
+                   ('ses_resumed_root', null, '/ws/alpha', 'Resumed root', 'resumed-root', 1500, null),
+                   ('ses_resumed_child', 'ses_resumed_root', '/ws/alpha', null, 'resumed-child', 2000, null),
+                   ('ses_resumed_grandchild', 'ses_resumed_child', '/ws/alpha', null, 'resumed-grandchild', 900000, null),
+                   ('ses_archived_root', null, '/ws/alpha', 'Archived root', 'archived-root', 1000, 1),
+                   ('ses_archived_child', 'ses_archived_root', '/ws/alpha', null, 'archived-child', 2000, null);",
+            )
+            .unwrap();
+        drop(connection);
+        let provider = SqliteSessions::new(db);
+        assert_eq!(provider.roots().len(), 3);
+        let candidates = provider.prune_candidates(5000);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, "ses_old_child");
+        assert_eq!(candidates[0].root, "ses_old_root");
+        assert_eq!(candidates[0].title.as_deref(), Some("Old child"));
+        assert_eq!(candidates[0].slug, "old-child");
     }
 
     #[test]

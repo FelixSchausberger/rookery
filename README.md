@@ -62,30 +62,30 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 
 ## Commands
 
-| command                                                             | effect                                                         |
-| ------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `rookery <task> [-- <opencode args>]`                               | create a workspace and start OpenCode there                    |
-| `rookery herdr [--json] [--no-focus] [--wait] [--task ID] [<task>]` | create a workspace in a new herdr tab and start OpenCode       |
-| `rookery tab <task>`                                                | create a workspace in a new zellij tab                         |
-| `rookery seat [--json]`                                             | print the calling agent's herdr workspace, tab, and pane       |
-| `rookery title <text...>`                                           | claim the current seat: describe, rename the workspace and tab |
-| `rookery ls [--counts\|--board\|--json] [--refresh]`                | classify every workspace                                       |
-| `rookery task add [--id ID] [--notes TEXT] <title...>`              | create a backlog task                                          |
-| `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                       |
-| `rookery task list [--json]`                                        | list tasks and their workspaces                                |
-| `rookery task done <task>`                                          | lead-only: mark the workspaces, set the task done              |
-| `rookery task note <task> <text...>`                                | append a decision or follow-up to the task's notes             |
-| `rookery task archive <task>`                                       | archive a task whose workspaces are gone                       |
-| `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                         |
-| `rookery clean --unmark [--current\|<workspace>]`                   | clear the cleanup mark                                         |
-| `rookery clean --apply`                                             | remove marked workspaces that are safe to remove               |
-| `rookery open <workspace\|task>`                                    | focus a workspace's seat                                       |
-| `rookery wait <task> [reason...]`                                   | park a workspace; gc keeps it until `rookery go`               |
-| `rookery go <task>`                                                 | release a parked workspace                                     |
-| `rookery done [--force] <task>`                                     | remove a finished workspace                                    |
-| `rookery rm [--force] <task>`                                       | remove a workspace                                             |
-| `rookery gc`                                                        | reclaim empty and merged workspaces idle past the age gate     |
-| `rookery reap [--dry-run]`                                          | export and delete conversations whose workspace is gone        |
+| command                                                             | effect                                                                                |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `rookery <task> [-- <opencode args>]`                               | create a workspace and start OpenCode there                                           |
+| `rookery herdr [--json] [--no-focus] [--wait] [--task ID] [<task>]` | create a workspace in a new herdr tab and start OpenCode                              |
+| `rookery tab <task>`                                                | create a workspace in a new zellij tab                                                |
+| `rookery seat [--json]`                                             | print the calling agent's herdr workspace, tab, and pane                              |
+| `rookery title <text...>`                                           | claim the current seat: describe, rename the workspace and tab                        |
+| `rookery ls [--counts\|--board\|--json] [--refresh]`                | classify every workspace                                                              |
+| `rookery task add [--id ID] [--notes TEXT] <title...>`              | create a backlog task                                                                 |
+| `rookery task assign [--move] <task> <workspace>`                   | group an existing workspace under a task                                              |
+| `rookery task list [--json]`                                        | list tasks and their workspaces                                                       |
+| `rookery task done <task>`                                          | lead-only: mark the workspaces, set the task done                                     |
+| `rookery task note <task> <text...>`                                | append a decision or follow-up to the task's notes                                    |
+| `rookery task archive <task>`                                       | archive a task whose workspaces are gone                                              |
+| `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                                                |
+| `rookery clean --unmark [--current\|<workspace>]`                   | clear the cleanup mark                                                                |
+| `rookery clean --apply`                                             | remove marked workspaces that are safe to remove                                      |
+| `rookery open <workspace\|task>`                                    | focus a workspace's seat                                                              |
+| `rookery wait <task> [reason...]`                                   | park a workspace; gc keeps it until `rookery go`                                      |
+| `rookery go <task>`                                                 | release a parked workspace                                                            |
+| `rookery done [--force] <task>`                                     | remove a finished workspace                                                           |
+| `rookery rm [--force] <task>`                                       | remove a workspace                                                                    |
+| `rookery gc`                                                        | reclaim empty and merged workspaces idle past the age gate                            |
+| `rookery reap [--dry-run] [--roots]`                                | prune child subagent transcripts; `--roots` also deletes dead top-level conversations |
 
 `rookery help` prints the usage and never creates a workspace; without it the
 external-subcommand fallback would treat `help` as a task name.
@@ -232,13 +232,17 @@ Deletion goes through `rip`, so a mistaken reclaim is restorable.
 ## Session lifecycle
 
 `rookery gc` removes a stale directory but leaves its conversation in the agent
-store. `rookery reap` closes that gap: a top-level session whose directory no
-longer exists is exported member by member to
-`${ROOKERY_SESSION_ARCHIVE:-$XDG_DATA_HOME/rookery/sessions}/<session>/`, every
-export is validated as JSON, and only then is the session tree deleted through
-the agent CLI. One failed export keeps the whole tree; a directory that still
-exists, or a subdirectory of one, is never touched. `--dry-run` lists the
-candidates without exporting or deleting.
+store. `rookery reap` prunes finished subagent transcripts: a child session
+whose whole subtree has been idle longer than `ROOKERY_REAP_CHILD_AGE` (default
+7 days) is exported member by member to
+`${ROOKERY_SESSION_ARCHIVE:-$XDG_DATA_HOME/rookery/sessions}/<root>/`, every
+export is validated as JSON, and only then is the child tree deleted through
+the agent CLI. A top-level conversation is never touched by the default pass;
+it is the person's review record and survives its workspace. `--roots` is the
+explicit escape hatch: it exports and deletes a top-level conversation whose
+directory is gone. One failed export keeps the whole tree; a live workspace and
+a subdirectory of one are never touched. `--dry-run` lists the candidates
+without exporting or deleting.
 
 The reaper uses the same agent entry point as the seats: `opencode2` when
 `ROOKERY_V2=1`, `opencode` otherwise, overridable with `ROOKERY_AGENT_BIN`. The
@@ -259,6 +263,7 @@ variable:
 | `gc.age`          | `ROOKERY_GC_AGE`          | `86400`                                                                    |
 | `gc.emptyAge`     | `ROOKERY_GC_EMPTY_AGE`    | `21600`                                                                    |
 | `gc.sessionAge`   | `ROOKERY_GC_SESSION_AGE`  | `604800`                                                                   |
+| `gc.reapChildAge` | `ROOKERY_REAP_CHILD_AGE`  | `604800`                                                                   |
 | `waitStaleDays`   | `ROOKERY_WAIT_STALE_DAYS` | `14`                                                                       |
 | `gc.onCalendar`   |                           | `daily`                                                                    |
 | `hooks.*`         | `ROOKERY_HOOK_*`          | empty                                                                      |
@@ -275,6 +280,9 @@ The TUI has no environment counterpart.
 
 - `ROOKERY_V2=1` runs the `opencode2` entry point instead of `opencode`
 - `ROOKERY_AGENT_BIN` overrides the agent CLI used by seats and `reap`
+- `ROOKERY_REAP_CHILD_AGE` (default 604800) is the idle age after which a
+  child subagent transcript is pruned; top-level conversations are never
+  pruned by the default pass
 - `ROOKERY_SESSION_ARCHIVE` sets the `reap` export directory
 - `ROOKERY_TASK_STALE_DAYS` (default 14) surfaces an open task that has not
   been touched; `task note` resets the clock

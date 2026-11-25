@@ -45,11 +45,13 @@ do not introduce it beyond the `SeatBackend` and `SessionProvider` traits.
 - Task writes go through `Store::mutate`; read paths stay lock-free because the
   document is replaced atomically. A clean marker is a request, not a stored
   lane.
-- The reaper exports every member of a session tree and validates each export
-  before deleting the root. One failed export keeps the whole tree. Only a
-  directory that no longer exists is a candidate; a live workspace and a
-  subdirectory of one are never touched. The agent entry point is the same one
-  the seats use (`ROOKERY_V2`/`ROOKERY_AGENT_BIN`).
+- The default reaper prunes child subagent transcripts whose whole subtree is
+  older than `ROOKERY_REAP_CHILD_AGE`, and never deletes a top-level
+  conversation: that is the person's review record. `reap --roots` is the
+  explicit pass for a root whose directory is gone. Every member is exported and
+  validated before any delete; one failed export keeps the whole tree. A live
+  workspace and a subdirectory of one are never touched. The agent entry point
+  is the same one the seats use (`ROOKERY_V2`/`ROOKERY_AGENT_BIN`).
 - The task status is the lifecycle authority: `open` holds its workspaces out
   of `gc` and `clean --apply`, `done` releases them, `archived` hides the task.
   `task done` must refuse a caller inside a grouped workspace; only the lead
