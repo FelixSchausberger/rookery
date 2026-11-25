@@ -86,6 +86,9 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 | `rookery gc`                                                        | reclaim empty and merged workspaces idle past the age gate     |
 | `rookery reap [--dry-run]`                                          | export and delete conversations whose workspace is gone        |
 
+`rookery help` prints the usage and never creates a workspace; without it the
+external-subcommand fallback would treat `help` as a task name.
+
 `rookery ls --counts` prints eight integers in this order: total, empty, merged,
 unpushed, in-flight, conflict, stale, waitold. The order is a consumer contract.
 `rookery ls --json` prints one JSON object per workspace (NDJSON) with `task`,

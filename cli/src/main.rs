@@ -199,6 +199,15 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    // `allow_external_subcommands` turns any unknown word into a task name, so
+    // `rookery help` used to create a workspace named help before it could say
+    // anything. Handle it before Config::load, which needs a jj repository.
+    if let Some(Cmd::External(args)) = &cli.command {
+        if args.first().map(String::as_str) == Some("help") {
+            print!("{USAGE}");
+            return Ok(());
+        }
+    }
     if cli.command.is_none() {
         eprint!("{USAGE}");
         std::process::exit(2);
