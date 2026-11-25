@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 fn default_version() -> u32 {
-    1
+    2
 }
 
 /// The task lifecycle. `open` groups workspaces and holds them out of every
@@ -26,6 +26,10 @@ pub struct Task {
     pub id: String,
     pub title: String,
     pub status: String,
+    /// The task this one belongs to, or None for a root. One level is allowed:
+    /// a child may not have children and a parent may not have a parent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub workspaces: Vec<String>,
     pub notes: String,
     pub created: i64,
@@ -118,6 +122,9 @@ impl Store {
             Err(err) => return Err(Error::message(format!("rookery: task store: {err}"))),
         };
         let result = update(&mut store)?;
+        // A write always lands the current document shape, even when the file
+        // was still a version-1 store with no parent fields.
+        store.version = default_version();
         let mut temp = tempfile::NamedTempFile::new_in(&self.base)
             .map_err(|_| Error::message("rookery: cannot write the task store"))?;
         serde_json::to_writer(temp.as_file_mut(), &store)
@@ -183,21 +190,47 @@ impl Store {
         map
     }
 
-    pub fn add(&self, id: &str, title: &str, notes: &str) -> Result<()> {
+    pub fn add(
+        &self,
+        id: &str,
+        title: &str,
+        notes: &str,
+        parent: Option<&str>,
+    ) -> Result<()> {
         self.mutate(|store| {
             if store.tasks.iter().any(|task| task.id == id) {
                 return Err(Error::refused(format!("rookery: task {id} already exists")));
             }
+            validate_parent(store, id, parent)?;
             let now = now_secs();
             store.tasks.push(Task {
                 id: id.to_string(),
                 title: title.to_string(),
                 status: OPEN.to_string(),
+                parent: parent.map(str::to_string),
                 workspaces: Vec::new(),
                 notes: notes.to_string(),
                 created: now,
                 updated: now,
             });
+            Ok(())
+        })
+    }
+
+    /// Set or clear a task's parent. The store enforces one level: the parent
+    /// must be an open root, and the child must not have children of its own.
+    pub fn set_parent(&self, id: &str, parent: Option<&str>) -> Result<()> {
+        self.mutate(|store| {
+            let Some(index) = store.tasks.iter().position(|task| task.id == id) else {
+                return Err(Error::refused(format!("rookery: no task named {id}")));
+            };
+            if store.tasks[index].status == ARCHIVED {
+                return Err(Error::refused(format!("rookery: task {id} is archived")));
+            }
+            validate_parent(store, id, parent)?;
+            let now = now_secs();
+            store.tasks[index].parent = parent.map(str::to_string);
+            store.tasks[index].updated = now;
             Ok(())
         })
     }
@@ -306,14 +339,21 @@ impl Store {
     /// a backlog item, not an archive entry.
     pub fn archive_if_empty_done(&self, id: &str) -> Result<bool> {
         self.mutate(|store| {
-            let Some(target) = store.tasks.iter_mut().find(|task| task.id == id) else {
+            let Some(index) = store.tasks.iter().position(|task| task.id == id) else {
                 return Ok(false);
             };
-            if target.status != DONE || !target.workspaces.is_empty() {
+            if store.tasks[index].status != DONE || !store.tasks[index].workspaces.is_empty() {
                 return Ok(false);
             }
-            target.status = ARCHIVED.to_string();
-            target.updated = now_secs();
+            if store
+                .tasks
+                .iter()
+                .any(|task| task.parent.as_deref() == Some(id) && task.status == OPEN)
+            {
+                return Ok(false);
+            }
+            store.tasks[index].status = ARCHIVED.to_string();
+            store.tasks[index].updated = now_secs();
             Ok(true)
         })
     }
@@ -325,6 +365,15 @@ impl Store {
             };
             if target.status == ARCHIVED {
                 return Err(Error::refused(format!("rookery: task {id} is archived")));
+            }
+            if store
+                .tasks
+                .iter()
+                .any(|task| task.parent.as_deref() == Some(id) && task.status == OPEN)
+            {
+                return Err(Error::refused(format!(
+                    "rookery: task {id} still has open child tasks; archive them first"
+                )));
             }
             if !target.workspaces.is_empty() {
                 return Err(Error::refused(format!(
@@ -352,20 +401,61 @@ impl Store {
     ) -> Option<String> {
         let store = self.read_tolerant();
         let task = store.tasks.into_iter().find(|task| task.id == id)?;
-        let mut first = None;
+        let mut chosen = None;
+        let mut live_workspace = None;
         for workspace in task.workspaces {
             if !exists(&workspace) {
                 continue;
             }
-            if live(&workspace) {
-                return Some(workspace);
+            if chosen.is_none() {
+                chosen = Some(workspace.clone());
             }
-            if first.is_none() {
-                first = Some(workspace);
+            if live_workspace.is_none() && live(&workspace) {
+                live_workspace = Some(workspace);
             }
         }
-        first
+        live_workspace.or(chosen)
     }
+}
+
+/// One level of nesting keeps the board tree, the cleanup rules, and the
+/// fan-out cap of the lead protocol simple. A child may not have children and
+/// a parent may not have a parent; both checks also make cycles impossible.
+fn validate_parent(store: &TaskStore, child: &str, parent: Option<&str>) -> Result<()> {
+    let Some(parent_id) = parent else {
+        return Ok(());
+    };
+    if parent_id == child {
+        return Err(Error::invalid(format!(
+            "rookery: task {child} cannot be its own parent"
+        )));
+    }
+    let Some(parent_task) = store.tasks.iter().find(|task| task.id == parent_id) else {
+        return Err(Error::invalid(format!(
+            "rookery: no task named {parent_id}"
+        )));
+    };
+    if parent_task.status != OPEN {
+        return Err(Error::invalid(format!(
+            "rookery: task {parent_id} is {}; only an open task can be a parent",
+            parent_task.status
+        )));
+    }
+    if parent_task.parent.is_some() {
+        return Err(Error::invalid(format!(
+            "rookery: task {parent_id} is already a child; only one level is allowed"
+        )));
+    }
+    if store
+        .tasks
+        .iter()
+        .any(|task| task.parent.as_deref() == Some(child))
+    {
+        return Err(Error::invalid(format!(
+            "rookery: task {child} already has children; only one level is allowed"
+        )));
+    }
+    Ok(())
 }
 
 fn flock_timeout(file: &File, seconds: u64) -> bool {
@@ -413,8 +503,8 @@ mod tests {
     fn add_assign_move_and_archive() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        store.add("one", "One", "").unwrap();
-        store.add("two", "Two", "").unwrap();
+        store.add("one", "One", "", None).unwrap();
+        store.add("two", "Two", "", None).unwrap();
         store.assign("one", "ws", false).unwrap();
         assert!(store.assign("two", "ws", false).is_err());
         store.assign("two", "ws", true).unwrap();
@@ -424,7 +514,7 @@ mod tests {
         store.archive("one").unwrap();
         assert!(!store.is_open("one").unwrap());
         store.archive("two").unwrap();
-        store.add("with-ws", "With a workspace", "").unwrap();
+        store.add("with-ws", "With a workspace", "", None).unwrap();
         store.assign("with-ws", "kept", false).unwrap();
         assert!(store.archive("with-ws").is_err());
     }
@@ -433,7 +523,7 @@ mod tests {
     fn done_gate_notes_and_auto_archive() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        store.add("t", "T", "").unwrap();
+        store.add("t", "T", "", None).unwrap();
         store.note("t", "first").unwrap();
         store.note("t", "second").unwrap();
         assert_eq!(store.task("t").unwrap().unwrap().notes, "- first\n- second");
@@ -448,12 +538,55 @@ mod tests {
     }
 
     #[test]
+    fn parent_links_are_one_level_and_archive_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.add("lead", "Lead", "", None).unwrap();
+        store.add("work", "Work", "", Some("lead")).unwrap();
+        assert_eq!(
+            store.task("work").unwrap().unwrap().parent.as_deref(),
+            Some("lead")
+        );
+
+        assert!(store.add("deep", "Deep", "", Some("work")).is_err());
+        assert!(store.set_parent("lead", Some("work")).is_err());
+        assert!(store.set_parent("lead", Some("lead")).is_err());
+        assert!(store.set_parent("work", Some("missing")).is_err());
+
+        store.set_status("lead", DONE).unwrap();
+        assert!(store.archive("lead").is_err());
+        store.archive("work").unwrap();
+        assert!(store.archive_if_empty_done("lead").unwrap());
+        assert_eq!(store.status("lead").unwrap().as_deref(), Some(ARCHIVED));
+    }
+
+    #[test]
+    fn a_version_one_store_reads_as_roots_and_upgrades_on_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        std::fs::write(
+            store.path(),
+            r#"{"version":1,"tasks":[{"id":"old","title":"Old","status":"open","workspaces":[],"notes":"","created":1,"updated":1}]}"#,
+        )
+        .unwrap();
+        let read = store.read().unwrap();
+        assert_eq!(read.version, 1);
+        assert_eq!(read.tasks[0].parent, None);
+
+        store.add("child", "Child", "", Some("old")).unwrap();
+        let read = store.read().unwrap();
+        assert_eq!(read.version, 2);
+        assert_eq!(read.tasks[0].parent, None);
+        assert_eq!(read.tasks[1].parent.as_deref(), Some("old"));
+    }
+
+    #[test]
     fn open_workspaces_excludes_done_and_archived() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path());
-        store.add("open", "Open", "").unwrap();
-        store.add("done", "Done", "").unwrap();
-        store.add("archived", "Archived", "").unwrap();
+        store.add("open", "Open", "", None).unwrap();
+        store.add("done", "Done", "", None).unwrap();
+        store.add("archived", "Archived", "", None).unwrap();
         store.assign("open", "ws-open", false).unwrap();
         store.assign("done", "ws-done", false).unwrap();
         store.assign("archived", "ws-archived", false).unwrap();
@@ -474,7 +607,7 @@ mod tests {
             let store = Arc::clone(&store);
             handles.push(std::thread::spawn(move || {
                 store
-                    .add(&format!("parallel-{index}"), "Parallel", "")
+                    .add(&format!("parallel-{index}"), "Parallel", "", None)
                     .unwrap();
             }));
         }
@@ -484,7 +617,7 @@ mod tests {
         let body = std::fs::read_to_string(store.path()).unwrap();
         let parsed: TaskStore = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.tasks.len(), 8);
-        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.version, 2);
     }
 
     #[test]
@@ -494,7 +627,7 @@ mod tests {
         std::fs::write(store.path(), "garbage\n").unwrap();
         assert!(store.read().is_err());
         assert!(store.read_tolerant().tasks.is_empty());
-        assert!(store.add("x", "X", "").is_err());
+        assert!(store.add("x", "X", "", None).is_err());
         assert_eq!(std::fs::read_to_string(store.path()).unwrap(), "garbage\n");
     }
 }

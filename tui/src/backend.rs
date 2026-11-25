@@ -46,7 +46,7 @@ impl Backend for CoreBackend {
     }
 
     fn mark_task(&self, task: &str) -> Result<String, String> {
-        let lines = ops::task_done(&self.config()?, task).map_err(|err| err.to_string())?;
+        let lines = ops::task_done(&self.config()?, task, false).map_err(|err| err.to_string())?;
         Ok(lines
             .first()
             .map(|line| line.text.clone())
@@ -71,7 +71,8 @@ impl Backend for CoreBackend {
     }
 
     fn add_task(&self, title: &str) -> Result<String, String> {
-        let id = ops::task_add(&self.config()?, title, None, "").map_err(|err| err.to_string())?;
+        let id =
+            ops::task_add(&self.config()?, title, None, "", None).map_err(|err| err.to_string())?;
         Ok(format!("rookery: task '{id}' added ({title})"))
     }
 
