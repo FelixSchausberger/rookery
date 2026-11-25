@@ -129,13 +129,10 @@ impl Palette {
         self.fg(Color::DarkGray)
     }
 
+    /// A selected border is bold in both palettes: without color, `fg` already
+    /// returns the plain style, so the modifier is the only difference to add.
     pub fn selected_border(self) -> Style {
-        let style = self.fg(Color::Cyan);
-        if self.color {
-            style.add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().add_modifier(Modifier::BOLD)
-        }
+        self.fg(Color::Cyan).add_modifier(Modifier::BOLD)
     }
 
     pub fn error(self) -> Style {
@@ -396,10 +393,11 @@ impl Card {
                 format!("wait: {reason}")
             });
         }
-        if let Some((title, _)) = self.latest_session_title() {
-            if !title.trim().is_empty() {
-                return Some(format!("session \"{title}\""));
-            }
+        if let Some((title, _)) = self
+            .latest_session_title()
+            .filter(|(title, _)| !title.trim().is_empty())
+        {
+            return Some(format!("session \"{title}\""));
         }
         if let Some(holds) = self.holds_label() {
             return Some(holds);
@@ -458,7 +456,6 @@ impl Card {
         selected: bool,
         expanded: bool,
         child: Option<usize>,
-        _now: i64,
         palette: Palette,
     ) -> Vec<Line<'static>> {
         if width == 0 {
@@ -538,9 +535,10 @@ impl Card {
             content.push(Line::from(vec![Span::raw(String::new())]));
         } else {
             for (index, part) in wrapped.into_iter().enumerate() {
-                let mut spans = vec![Span::styled(part.clone(), title_style())];
+                let part_width = display_width(&part);
+                let mut spans = vec![Span::styled(part, title_style())];
                 if index == 0 && count_width > 0 {
-                    let pad = inner.saturating_sub(display_width(&part) + count_width);
+                    let pad = inner.saturating_sub(part_width + count_width);
                     spans.push(Span::raw(" ".repeat(pad)));
                     spans.push(Span::styled(count.clone(), dim_style()));
                 }
@@ -739,11 +737,13 @@ fn accent_style(card: &Card, selected: bool, palette: Palette) -> Style {
     style
 }
 
-fn title_style() -> Style {
+/// The two styles shared by card bodies and the frame chrome; `ui` imports them
+/// so a card title and a lane header cannot drift apart.
+pub fn title_style() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
 }
 
-fn dim_style() -> Style {
+pub fn dim_style() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
@@ -1022,9 +1022,7 @@ mod tests {
         let order: Vec<&str> = cards.iter().filter_map(|card| card.id()).collect();
         assert_eq!(
             order,
-            vec![
-                "waiting", "conflict", "unpushed", "live", "inflight", "merged"
-            ]
+            vec!["waiting", "conflict", "unpushed", "live", "inflight", "merged"]
         );
     }
 
@@ -1218,11 +1216,9 @@ mod tests {
         let lanes = build(&board, 10_000, Filter::All, "live", Sort::Title);
         let cards: usize = lanes.iter().map(|lane| lane.cards.len()).sum();
         assert_eq!(cards, 1);
-        assert!(
-            lanes
-                .iter()
-                .any(|lane| lane.cards.iter().any(|card| card.id() == Some("live")))
-        );
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.cards.iter().any(|card| card.id() == Some("live"))));
     }
 
     #[test]

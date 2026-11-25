@@ -2,14 +2,14 @@
 // lane and its bar on narrow terminals, the detail pane, and the modals.
 use crate::app::{App, Mode};
 use crate::model::{Board, Hold, Lane, State, Workspace};
-use crate::view::{relative_age, truncate, wrap};
-use ratatui::Frame;
+use crate::view::{dim_style, relative_age, title_style, truncate, wrap};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
+use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -74,7 +74,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 workspace,
                 selected,
             } => render_assign(frame, area, app, workspace, *selected),
-            Mode::Filter { text, .. } => render_filter(frame, area, text),
+            Mode::Filter { .. } => render_filter(frame, area, &app.query),
             Mode::Normal | Mode::Help => {}
         }
     }
@@ -130,7 +130,7 @@ fn plural(count: usize, noun: &str) -> String {
 }
 
 fn refresh_age(app: &App) -> String {
-    let seconds = (app.clock - app.loaded_at).max(0);
+    let seconds = (app.clock - app.now).max(0);
     if seconds < 60 {
         format!("{seconds}s")
     } else {
@@ -326,13 +326,12 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide:
     };
     let body = Rect::new(rows[1].x, rows[1].y, body_width as u16, rows[1].height);
     let max_offset = content.saturating_sub(height);
-    let mut offset = app.scroll[index].offset.min(max_offset);
-    let cursor_lane = app.cursor.lane == index;
+    let mut offset = app.scroll[index].min(max_offset);
     let viewport_changed = app.viewports[index] != height;
-    if cursor_lane && (app.reveal || viewport_changed) {
+    if selected && (app.reveal || viewport_changed) {
         offset = reveal(offset, cursor, height, content);
     }
-    app.scroll[index].offset = offset;
+    app.scroll[index] = offset;
     app.viewports[index] = height;
     app.content_heights[index] = content;
     frame.render_widget(
@@ -351,7 +350,7 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide:
             &mut state,
         );
     }
-    if cursor_lane {
+    if selected {
         app.reveal = false;
     }
 }
@@ -389,14 +388,7 @@ fn lane_lines(
                 app.palette,
             )
         } else {
-            card.compact_lines(
-                width as usize,
-                selected,
-                expanded,
-                child,
-                app.now,
-                app.palette,
-            )
+            card.compact_lines(width as usize, selected, expanded, child, app.palette)
         };
         lines.extend(card_lines);
         if selected {
@@ -602,9 +594,8 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title("detail");
     let inner = block.inner(area);
     let width = inner.width as usize;
-    let lines = detail_lines(app, width);
-    let visible = inner.height as usize;
-    let lines: Vec<Line> = lines.into_iter().take(visible).collect();
+    let mut lines = detail_lines(app, width);
+    lines.truncate(inner.height as usize);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -753,23 +744,15 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-fn title_style() -> Style {
-    Style::default().add_modifier(Modifier::BOLD)
-}
-
-fn dim_style() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::app::App;
     use crate::model::{Board, Clean, Hold, Session, State, Task, Wait, Workspace};
     use crate::view::Palette;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
+    use ratatui::Terminal;
 
     const NOW: i64 = 1_700_000_000;
 
@@ -1136,7 +1119,7 @@ mod tests {
         render_text(&mut app, 60, 16);
         press(&mut app, KeyCode::PageDown);
         let scrolled = render_text(&mut app, 60, 16);
-        assert_ne!(app.scroll[0].offset, 0);
+        assert_ne!(app.scroll[0], 0);
         assert!(!scrolled.contains("Task 00"));
         assert_eq!(app.cursor.card, 0);
 

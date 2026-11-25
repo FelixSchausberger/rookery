@@ -37,11 +37,6 @@ pub struct Cursor {
     pub child: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ScrollState {
-    pub offset: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScrollAmount {
     Half,
@@ -61,7 +56,6 @@ pub enum Mode {
         selected: usize,
     },
     Filter {
-        text: String,
         before_query: String,
         before_selection: Option<CardKey>,
     },
@@ -75,8 +69,8 @@ pub struct App {
     pub mode: Mode,
     pub status: String,
     pub error: bool,
+    /// The board snapshot time, also the age baseline for `refreshed <age>`.
     pub now: i64,
-    pub loaded_at: i64,
     pub clock: i64,
     pub detail: bool,
     pub help_scroll: usize,
@@ -84,7 +78,10 @@ pub struct App {
     pub query: String,
     pub sort: Sort,
     pub palette: Palette,
-    pub scroll: [ScrollState; 5],
+    /// Per-lane presentation state, written by `ui::render` and read by the
+    /// paging keys: the applied scroll offset, the viewport height, and the
+    /// height of the lane's content as last drawn.
+    pub scroll: [usize; 5],
     pub viewports: [usize; 5],
     pub content_heights: [usize; 5],
     pub expanded: Option<CardKey>,
@@ -107,7 +104,6 @@ impl App {
             board,
             lanes,
             now,
-            loaded_at: now,
             clock: now,
             reveal: true,
             ..Self::default()
@@ -129,7 +125,6 @@ impl App {
         self.lanes = view::build(&board, now, self.filter, &self.query, self.sort);
         self.board = board;
         self.now = now;
-        self.loaded_at = now;
         self.clock = now;
         if self.load_error {
             self.status.clear();
@@ -137,10 +132,12 @@ impl App {
             self.load_error = false;
         }
         let found = self.restore_selection(key, child, lane, card);
-        if let Some(expanded) = self.expanded.clone() {
-            if self.find_key(&expanded).is_none() {
-                self.expanded = None;
-            }
+        if self
+            .expanded
+            .as_ref()
+            .is_some_and(|key| self.find_key(key).is_none())
+        {
+            self.expanded = None;
         }
         if !self.selection_is_expanded() {
             self.cursor.child = None;
@@ -163,15 +160,17 @@ impl App {
     fn start_filter_input(&mut self) {
         self.pending_g = false;
         self.mode = Mode::Filter {
-            text: self.query.clone(),
             before_query: self.query.clone(),
             before_selection: self.selected_key(),
         };
     }
 
-    fn set_query(&mut self, text: String) {
+    /// Apply an edit to `query`, then rebuild the lanes. `filter_selection`
+    /// remembers the card the board was on when the filter first became active,
+    /// so clearing or cancelling can return to it.
+    fn edit_query(&mut self, edit: impl FnOnce(&mut String)) {
         let was_filtered = self.has_filter();
-        self.query = text;
+        edit(&mut self.query);
         if !was_filtered && self.has_filter() {
             self.filter_selection = self.selected_key();
         }
@@ -284,7 +283,7 @@ impl App {
             .filter(|task| task.status == "open")
             .map(|task| (task.id.as_str(), task.title.as_str()))
             .collect();
-        tasks.sort_by_key(|a| a.1.to_lowercase());
+        tasks.sort_by_cached_key(|(_, title)| title.to_lowercase());
         tasks
     }
 
@@ -420,154 +419,117 @@ impl App {
         }
     }
 
+    /// A modal owns the keyboard while it is up. Each arm either closes the
+    /// mode by returning early, or handles the key and lets the tail restore
+    /// the mode; help closes on any key it does not scroll with.
     fn handle_modal(&mut self, key: KeyEvent) -> Option<Action> {
         let mode = std::mem::take(&mut self.mode);
         match mode {
-            Mode::Help => match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.help_scroll += 1;
-                    self.mode = Mode::Help;
-                    None
+            Mode::Help => {
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => self.help_scroll += 1,
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.help_scroll = self.help_scroll.saturating_sub(1);
+                    }
+                    KeyCode::PageDown => self.help_scroll += 10,
+                    KeyCode::PageUp => {
+                        self.help_scroll = self.help_scroll.saturating_sub(10);
+                    }
+                    _ => return None,
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.help_scroll = self.help_scroll.saturating_sub(1);
-                    self.mode = Mode::Help;
-                    None
-                }
-                KeyCode::PageDown => {
-                    self.help_scroll += 10;
-                    self.mode = Mode::Help;
-                    None
-                }
-                KeyCode::PageUp => {
-                    self.help_scroll = self.help_scroll.saturating_sub(10);
-                    self.mode = Mode::Help;
-                    None
-                }
-                _ => None,
-            },
+                self.mode = Mode::Help;
+                None
+            }
             Mode::Filter {
-                mut text,
                 before_query,
                 before_selection,
-            } => match key.code {
-                KeyCode::Esc => {
-                    self.query = before_query;
-                    if self.query.is_empty() && self.filter == Filter::All {
-                        self.filter_selection = None;
+            } => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.query = before_query;
+                        if self.query.is_empty() && self.filter == Filter::All {
+                            self.filter_selection = None;
+                        }
+                        self.rebuild_lanes();
+                        self.restore_key(before_selection);
+                        return None;
                     }
-                    self.rebuild_lanes();
-                    self.restore_key(before_selection);
-                    None
-                }
-                KeyCode::Enter => {
-                    if self.query.trim().is_empty() {
-                        self.set_status("filter cleared");
-                    } else {
-                        self.set_status(format!("filter \"{}\"", self.query.trim()));
+                    KeyCode::Enter => {
+                        if self.query.trim().is_empty() {
+                            self.set_status("filter cleared");
+                        } else {
+                            self.set_status(format!("filter \"{}\"", self.query.trim()));
+                        }
+                        return None;
                     }
-                    None
+                    KeyCode::Backspace => self.edit_query(|text| {
+                        text.pop();
+                    }),
+                    KeyCode::Char(c) => self.edit_query(|text| text.push(c)),
+                    _ => {}
                 }
-                KeyCode::Backspace => {
-                    text.pop();
-                    self.set_query(text.clone());
-                    self.mode = Mode::Filter {
-                        text,
-                        before_query,
-                        before_selection,
-                    };
-                    None
-                }
-                KeyCode::Char(c) => {
-                    text.push(c);
-                    self.set_query(text.clone());
-                    self.mode = Mode::Filter {
-                        text,
-                        before_query,
-                        before_selection,
-                    };
-                    None
-                }
-                _ => {
-                    self.mode = Mode::Filter {
-                        text,
-                        before_query,
-                        before_selection,
-                    };
-                    None
-                }
-            },
-            Mode::TaskInput { mut text } => match key.code {
-                KeyCode::Esc => None,
-                KeyCode::Enter => {
-                    let title = text.trim().to_string();
-                    if title.is_empty() {
-                        self.set_error("a task needs a title");
-                        None
-                    } else {
-                        Some(Action::AddTask(title))
+                self.mode = Mode::Filter {
+                    before_query,
+                    before_selection,
+                };
+                None
+            }
+            Mode::TaskInput { mut text } => {
+                match key.code {
+                    KeyCode::Esc => return None,
+                    KeyCode::Enter => {
+                        let title = text.trim().to_string();
+                        if title.is_empty() {
+                            self.set_error("a task needs a title");
+                            return None;
+                        }
+                        return Some(Action::AddTask(title));
                     }
+                    KeyCode::Backspace => {
+                        text.pop();
+                    }
+                    KeyCode::Char(c) => text.push(c),
+                    _ => {}
                 }
-                KeyCode::Backspace => {
-                    text.pop();
-                    self.mode = Mode::TaskInput { text };
-                    None
-                }
-                KeyCode::Char(c) => {
-                    text.push(c);
-                    self.mode = Mode::TaskInput { text };
-                    None
-                }
-                _ => {
-                    self.mode = Mode::TaskInput { text };
-                    None
-                }
-            },
+                self.mode = Mode::TaskInput { text };
+                None
+            }
             Mode::Assign {
                 workspace,
                 mut selected,
-            } => match key.code {
-                KeyCode::Esc => None,
-                KeyCode::Char('j') | KeyCode::Down => {
-                    let len = self.open_tasks().len();
-                    if len > 0 {
-                        selected = (selected + 1).min(len - 1);
-                    }
-                    self.mode = Mode::Assign {
-                        workspace,
-                        selected,
-                    };
-                    None
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    selected = selected.saturating_sub(1);
-                    self.mode = Mode::Assign {
-                        workspace,
-                        selected,
-                    };
-                    None
-                }
-                KeyCode::Enter => {
-                    let tasks = self.open_tasks();
-                    match tasks.get(selected) {
-                        Some((id, _)) => Some(Action::AssignTask {
-                            task: (*id).to_string(),
-                            workspace,
-                        }),
-                        None => {
-                            self.set_error("no open tasks");
-                            None
+            } => {
+                match key.code {
+                    KeyCode::Esc => return None,
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        let len = self.open_tasks().len();
+                        if len > 0 {
+                            selected = (selected + 1).min(len - 1);
                         }
                     }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Enter => {
+                        let tasks = self.open_tasks();
+                        return match tasks.get(selected) {
+                            Some((id, _)) => Some(Action::AssignTask {
+                                task: (*id).to_string(),
+                                workspace,
+                            }),
+                            None => {
+                                self.set_error("no open tasks");
+                                None
+                            }
+                        };
+                    }
+                    _ => {}
                 }
-                _ => {
-                    self.mode = Mode::Assign {
-                        workspace,
-                        selected,
-                    };
-                    None
-                }
-            },
+                self.mode = Mode::Assign {
+                    workspace,
+                    selected,
+                };
+                None
+            }
             Mode::Normal => None,
         }
     }
@@ -700,14 +662,14 @@ impl App {
             ScrollAmount::Half => (viewport / 2).max(1),
             ScrollAmount::Full => viewport,
         };
-        let offset = self.scroll.get(lane).map(|state| state.offset).unwrap_or(0);
+        let offset = self.scroll.get(lane).copied().unwrap_or(0);
         let offset = if direction < 0 {
             offset.saturating_sub(step)
         } else {
             (offset + step).min(max_offset)
         };
-        if let Some(state) = self.scroll.get_mut(lane) {
-            state.offset = offset;
+        if let Some(slot) = self.scroll.get_mut(lane) {
+            *slot = offset;
         }
         self.reveal = false;
     }
@@ -1154,19 +1116,19 @@ mod tests {
         app.content_heights = [40; 5];
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(app.cursor.lane, 1);
-        assert_eq!(app.scroll[1].offset, 0);
+        assert_eq!(app.scroll[1], 0);
         press(&mut app, KeyCode::PageDown);
-        assert_eq!(app.scroll[1].offset, 10);
+        assert_eq!(app.scroll[1], 10);
         press(&mut app, KeyCode::PageUp);
-        assert_eq!(app.scroll[1].offset, 0);
+        assert_eq!(app.scroll[1], 0);
         press_ctrl(&mut app, KeyCode::Char('d'));
-        assert_eq!(app.scroll[1].offset, 5);
+        assert_eq!(app.scroll[1], 5);
         press_ctrl(&mut app, KeyCode::Char('u'));
-        assert_eq!(app.scroll[1].offset, 0);
+        assert_eq!(app.scroll[1], 0);
         for _ in 0..5 {
             press(&mut app, KeyCode::PageDown);
         }
-        assert_eq!(app.scroll[1].offset, 30);
+        assert_eq!(app.scroll[1], 30);
         assert_eq!(app.cursor.card, 0);
     }
 
