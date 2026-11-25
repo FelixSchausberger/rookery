@@ -1,16 +1,16 @@
 rookery board  6 cards  6 workspaces   live 1  session 0  wait 1  conflict 0  stale 1   refreshed 0s
 Backlog 1 · 0ws           Active 2 · 3ws           Review 1 · 1ws            Blocked 1 · 1ws          To Clean 1 · 1ws          ┌detail────────────────────────┐
-╭───────────────────────╮ ╭──────────────────────╮ ╭───────────────────────╮ ╭──────────────────────╮ ╭───────────────────────╮ │enter open  d mark  s seat    │
-│Plan the next release  │ │Fix the board cache  2│ │Polish the cards      1│ │Wait for the design  1│ │Clean the old seat    1│ │#polish                       │
-│#plan · updated 2d     │ │#cache · updated 2h   │ │#polish · updated 30m  │ │review                │ │#old · updated 2h      │ │Polish the cards              │
-│press s to start a seat│ │1 unpushed · 1 merged │ │1 merged               │ │#design · updated 3d  │ │1 unpushed · clean 2h  │ │created 2d · updated 30m      │
-╰───────────────────────╯ │1 live                │ │session "Board polish" │ │1 empty · waiting 3d  │ │sweep keeps unpushed   │ │ws-polish                     │
-                          ╰──────────────────────╯ │▸ ws-polish            │ │wait: design review   │ ╰───────────────────────╯ │merged · 1h                   │
-                          ╭──────────────────────╮ │  merged 1h            │ ╰──────────────────────╯                           │session "Board polish" 30m    │
-                          │Loose experiment      │ ╰───────────────────────╯                                                    │                              │
-                          │updated 1h            │                                                                              │                              │
-                          │1 unpushed            │                                                                              │                              │
-                          ╰──────────────────────╯                                                                              │                              │
+▌ Plan the next release   ▌ Fix the board cac… (2) ▌ Polish the cards (1)    ▌ Wait for the desi… (1) ▌ Clean the old seat (1)  │enter open  d mark            │
+  press s to start a seat   1 unpushed · 1 merged…   1 merged · session "Bo…   1 empty · waiting 3d …   1 unpushed · clean 2h … │#polish                       │
+                          ▌ Loose experiment       ▸ ws-polish                                                                  │Polish the cards              │
+                            1 unpushed               merged 1h                                                                  │created 2d · updated 30m      │
+                                                                                                                                │ws-polish                     │
+                                                                                                                                │merged · 1h                   │
+                                                                                                                                │session "Board polish" 30m    │
+                                                                                                                                │                              │
+                                                                                                                                │                              │
+                                                                                                                                │                              │
+                                                                                                                                │                              │
                                                                                                                                 │                              │
                                                                                                                                 │                              │
                                                                                                                                 │                              │

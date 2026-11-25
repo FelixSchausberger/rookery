@@ -26,7 +26,7 @@ use std::time::Duration;
 const REFRESH: Duration = Duration::from_secs(2);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let backend: Arc<dyn Backend> = Arc::new(CoreBackend);
+    let backend: Arc<dyn Backend> = Arc::new(CoreBackend::default());
     let mut app = App::new(Board::default());
     match backend.load() {
         Ok(board) => app.set_board(board),

@@ -174,21 +174,23 @@ expands in place with one row per workspace.
   workspace is merged, empty, or in flight. Blocked: a conflict or a wait
   marker. To Clean: every workspace is marked. Archived tasks are hidden.
 - At 110 columns and wider the five lanes share the width. Below that one lane
-  is focused and a lane bar keeps all five counts visible; cards are compact
-  below 70 columns. The header counts live, session, wait, conflict and stale
-  workspaces and the time since the last successful refresh.
+  is focused and a lane bar keeps all five counts visible. Cards are compact
+  below 70 columns or when a lane is narrower than 29 columns, so the five-lane
+  band keeps readable titles instead of shrinking bordered cards. The header
+  counts live, session, wait, conflict and stale workspaces and the time since
+  the last successful refresh.
 - Keys: `h`/`l` and `Tab`/`Shift-Tab` switch lanes, `1`-`5` jump to a lane,
   `j`/`k` move between cards, `Space` expands or collapses a card, `Enter`
   opens the selected task or workspace seat, `d` marks the task or workspace
-  for cleanup, `s` starts a seat for the task, `n` creates a backlog task, `a`
-  assigns an ungrouped workspace, `gg`/`G` jump to the first or last card,
-  `Ctrl-d`/`Ctrl-u` scroll half a page, `PgDn`/`PgUp` scroll a page, `i` toggles
-  the detail pane, `/` filters live, `f` cycles the filter presets, `o` cycles
-  the sort, `r` refreshes, `?` opens the key help, `Esc` clears the filter or
-  closes the detail pane, and `q` quits.
+  for cleanup, `s` starts a seat for a task with no workspace, `n` creates a
+  backlog task, `a` assigns an ungrouped workspace, `gg`/`G` jump to the first
+  or last card, `Ctrl-d`/`Ctrl-u` scroll half a page, `PgDn`/`PgUp` scroll a
+  page, `i` toggles the detail pane, `/` filters live, `f` cycles the filter
+  presets, `o` cycles the sort, `r` refreshes, `?` opens the key help, `Esc`
+  clears the filter or closes the detail pane, and `q` quits.
 - The detail pane shows the selected task's notes and timestamps and each
   workspace's state, hold, session, wait, clean marker and path. It is a right
-  pane at 140 columns, a bottom pane at 70x24, and a footer hint when neither
+  pane at 143 columns, a bottom pane at 70x24, and a footer hint when neither
   fits.
 - `/` matches titles, ids, notes, workspace names, descriptions and session
   titles. `f` cycles all, attention, live, unpushed and reclaimable; `o`

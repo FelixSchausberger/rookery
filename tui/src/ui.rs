@@ -18,7 +18,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let wide_terminal = area.width >= 110;
+    let detail_right = app.detail && area.width >= 143;
+    let detail_bottom = app.detail && !detail_right && area.width >= 70 && area.height >= 24;
+    let detail_allowed = detail_right || detail_bottom;
+    // The right pane and its gutter take 33 columns. Decide between five lanes
+    // and one focused lane from what the board actually keeps.
+    let board_width = if detail_right {
+        area.width.saturating_sub(33)
+    } else {
+        area.width
+    };
+    let wide_terminal = board_width >= 110;
     let (header, lane_bar, body, footer) = if wide_terminal {
         let chunks = Layout::vertical([
             Constraint::Length(1),
@@ -37,10 +47,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(area);
         (chunks[0], Some(chunks[1]), chunks[2], chunks[3])
     };
-
-    let detail_right = app.detail && area.width >= 140;
-    let detail_bottom = app.detail && !detail_right && area.width >= 70 && area.height >= 24;
-    let detail_allowed = detail_right || detail_bottom;
 
     render_title(frame, header, app);
     if let Some(bar) = lane_bar {
@@ -240,8 +246,7 @@ fn render_lanes(frame: &mut Frame, area: Rect, app: &mut App, wide_terminal: boo
         }
     } else {
         let index = app.cursor.lane;
-        let card_wide = area.width >= 70;
-        render_lane(frame, area, app, index, card_wide);
+        render_lane(frame, area, app, index, false);
     }
 }
 
@@ -286,7 +291,11 @@ fn render_message(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     );
 }
 
-fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide: bool) {
+fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide_terminal: bool) {
+    // A bordered card needs a real column to breathe; a compact stripe card
+    // keeps five lanes legible in the 110-149 range. Narrow focused terminals
+    // (below 70) keep the denser compact card they were designed with.
+    let card_wide = area.width >= 29 && (wide_terminal || area.width >= 70);
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     let selected = app.cursor.lane == index;
     let label = {
@@ -310,10 +319,11 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide:
 
     let height = rows[1].height as usize;
     let full_width = rows[1].width as usize;
-    let (mut lines, mut cursor) = lane_lines(app, index, full_width as u16, wide);
+    let (mut lines, mut cursor) = lane_lines(app, index, full_width as u16, card_wide);
     let mut scrollbar = lines.len() > height && full_width > 1;
     if scrollbar {
-        let (narrow_lines, narrow_cursor) = lane_lines(app, index, (full_width - 1) as u16, wide);
+        let (narrow_lines, narrow_cursor) =
+            lane_lines(app, index, (full_width - 1) as u16, card_wide);
         lines = narrow_lines;
         cursor = narrow_cursor;
         scrollbar = lines.len() > height;
@@ -452,7 +462,7 @@ fn hint(app: &App) -> String {
         } else if app.expanded.as_ref() == Some(&card.key) {
             "enter open  d mark  space collapse  i detail  ? help".to_string()
         } else {
-            "enter open  d mark  s seat  space expand  i detail  ? help".to_string()
+            "enter open  d mark  space expand  i detail  ? help".to_string()
         }
     } else {
         "enter open  d mark  a assign  space expand  ? help".to_string()
@@ -466,7 +476,9 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut hints = vec!["enter open", "d mark"];
     if card.id().is_some() {
-        hints.push("s seat");
+        if card.workspaces().is_empty() {
+            hints.push("s seat");
+        }
     } else {
         hints.push("a assign");
     }
@@ -622,7 +634,7 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  enter   open the selected conversation's seat"),
         Line::raw("  d       mark the task (or this workspace) for cleanup"),
         Line::raw("  n       create a backlog task"),
-        Line::raw("  s       start a seat for the task"),
+        Line::raw("  s       start a seat for a task with no workspace"),
         Line::raw("  a       assign the selected ungrouped workspace"),
         Line::raw("  /       filter cards"),
         Line::raw("  f       cycle filter presets"),
@@ -976,6 +988,16 @@ mod tests {
     }
 
     #[test]
+    fn golden_143x40_detail() {
+        let mut app = App::new_at(golden_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('i'));
+        assert_golden("board-143x40-detail.txt", &mut app, 143, 40);
+    }
+
+    #[test]
     fn golden_160x50_detail() {
         let mut app = App::new_at(golden_board(), NOW);
         press(&mut app, KeyCode::Char('l'));
@@ -1013,7 +1035,7 @@ mod tests {
         let text = render_text(&mut app, 120, 40);
         assert!(text.contains("! boom"));
         assert!(text.contains("r retry"));
-        assert!(text.contains("Fix the board cache"));
+        assert!(text.contains("Fix the board"));
     }
 
     #[test]

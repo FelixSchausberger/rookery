@@ -1,16 +1,16 @@
 rookery board  6 cards  6 workspaces   live 1  session 0  wait 1  conflict 0  stale 1   refreshed 0s
 Backlog 1 · 0ws         Active 2 · 3ws          Review 1 · 1ws           Blocked 1 · 1ws         To Clean 1 · 1ws
-╭─────────────────────╮ ╭─────────────────────╮ ╭──────────────────────╮ ╭─────────────────────╮ ╭─────────────────────╮
-│Plan the next release│ │Fix the board cache 2│ │Polish the cards     1│ │Wait for the design 1│ │Clean the old seat  1│
-│#plan · updated 2d   │ │#cache · updated 2h  │ │#polish · updated 30m │ │review               │ │#old · updated 2h    │
-│press s to start a s…│ │1 unpushed · 1 merged│ │1 merged              │ │#design · updated 3d │ │1 unpushed · clean 2h│
-╰─────────────────────╯ │1 live               │ │session "Board polish"│ │1 empty · waiting 3d │ │sweep keeps unpushed │
-                        ╰─────────────────────╯ ╰──────────────────────╯ │wait: design review  │ ╰─────────────────────╯
-                        ╭───┌keys──────────────────────────────────────────────────────────┐───╯
-                        │Loo│  enter   open the selected conversation's seat               │
-                        │upd│  d       mark the task (or this workspace) for cleanup       │
-                        │1 u│  n       create a backlog task                               │
-                        ╰───│  s       start a seat for the task                           │
+▌ Plan the next release ▌ Fix the board ca… (2) ▌ Polish the cards (1)   ▌ Wait for the des… (1) ▌ Clean the old se… (1)
+  press s to start a s…   1 unpushed · 1 merge…   1 merged · session "B…   1 empty · waiting 3d…   1 unpushed · clean 2…
+                        ▌ Loose experiment
+                          1 unpushed
+
+
+                            ┌keys──────────────────────────────────────────────────────────┐
+                            │  enter   open the selected conversation's seat               │
+                            │  d       mark the task (or this workspace) for cleanup       │
+                            │  n       create a backlog task                               │
+                            │  s       start a seat for a task with no workspace           │
                             │  a       assign the selected ungrouped workspace             │
                             │  /       filter cards                                        │
                             │  f       cycle filter presets                                │

@@ -3,6 +3,7 @@ use crate::util::{home, is_writable, xdg_cache, xdg_data};
 use regex::Regex;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 /// The pre-rename names are read only when the new name is empty. The wrapper
 /// pinning `ROOKERY_*` defaults therefore wins over an inherited `OCWS_*`.
@@ -64,6 +65,10 @@ pub struct Config {
     /// The agent CLI that owns the session database; overridable for V2.
     pub agent_bin: String,
     pub cache_dir: PathBuf,
+    /// The board cache's repository identity. Computed on the first board read
+    /// and shared by every clone, so a long-lived TUI does not re-run
+    /// `jj config path` on each refresh.
+    pub repo_id: Arc<OnceLock<String>>,
     pub herdr_bin: String,
     /// The CLI the herdr pane re-enters to create a seat. The CLI itself uses
     /// its own executable; the TUI wrapper points this at the configured CLI.
@@ -106,6 +111,7 @@ impl Config {
             agent_bin: env_nonempty("ROOKERY_AGENT_BIN")
                 .unwrap_or_else(|| if v2 { "opencode2" } else { "opencode" }.to_string()),
             cache_dir: xdg_cache("rookery"),
+            repo_id: Arc::new(OnceLock::new()),
             herdr_bin: env_nonempty("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".to_string()),
             rookery_bin: env_nonempty("ROOKERY_BIN")
                 .map(PathBuf::from)

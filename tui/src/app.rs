@@ -702,17 +702,20 @@ impl App {
         })
     }
 
+    /// A seat starts only for a task that has no workspace yet. A task that
+    /// already has one is opened instead; starting another would put a second
+    /// agent under the same task without saying so.
     fn seat_selected(&mut self) -> Option<Action> {
-        match self.selected_task() {
-            Some(task) => match &task.id {
-                Some(id) => Some(Action::StartSeat(id.clone())),
-                None => {
-                    self.set_error("assign the workspace to a task first");
-                    None
-                }
-            },
-            None => None,
+        let task = self.selected_task()?;
+        let Some(id) = &task.id else {
+            self.set_error("assign the workspace to a task first");
+            return None;
+        };
+        if !task.workspaces.is_empty() {
+            self.set_status("task already has a workspace; enter opens it");
+            return None;
         }
+        Some(Action::StartSeat(id.clone()))
     }
 
     fn start_assign(&mut self) -> Option<Action> {
@@ -1022,17 +1025,24 @@ mod tests {
     }
 
     #[test]
-    fn s_starts_a_seat_only_for_an_assigned_task() {
+    fn s_starts_a_seat_only_for_an_empty_task() {
         let mut app = App::new_at(board(), NOW);
         press(&mut app, KeyCode::Char('l'));
-        assert_eq!(
-            press(&mut app, KeyCode::Char('s')),
-            Some(Action::StartSeat("active".into()))
-        );
+        assert_eq!(press(&mut app, KeyCode::Char('s')), None);
+        assert!(!app.error);
+        assert_eq!(app.status, "task already has a workspace; enter opens it");
+
         press(&mut app, KeyCode::Char('j'));
         assert_eq!(app.selected_task().unwrap().id, None);
         assert_eq!(press(&mut app, KeyCode::Char('s')), None);
         assert!(app.error);
+
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("backlog"));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('s')),
+            Some(Action::StartSeat("backlog".into()))
+        );
     }
 
     #[test]
