@@ -21,7 +21,8 @@ do not introduce it beyond the `SeatBackend` and `SessionProvider` traits.
 - `packages/rookery.nix`: the v0.4.0 shell, shipped as `rookery-legacy`
 - `nix/module.nix`: `programs.rookery` options, the configured CLI and TUI
   wrappers, and the GC service
-- `tests/board.sh`, `tests/tasks.sh`: behavioral tests for the shipping CLI
+- `tests/board.sh`, `tests/tasks.sh`, `tests/reap.sh`: behavioral tests for the
+  shipping CLI
 - `tests/parity.sh`: the legacy shell and the Rust CLI on the same fixtures
 - `flake.nix`: packages, module export, checks, dev shell, formatting
 
@@ -44,6 +45,11 @@ do not introduce it beyond the `SeatBackend` and `SessionProvider` traits.
 - Task writes go through `Store::mutate`; read paths stay lock-free because the
   document is replaced atomically. A clean marker is a request, not a stored
   lane.
+- The reaper exports every member of a session tree and validates each export
+  before deleting the root. One failed export keeps the whole tree. Only a
+  directory that no longer exists is a candidate; a live workspace and a
+  subdirectory of one are never touched. The agent entry point is the same one
+  the seats use (`ROOKERY_V2`/`ROOKERY_AGENT_BIN`).
 - The package wraps jj, rip, direnv and the other runtime inputs on PATH.
   Consumers that follow their own nixpkgs get that nixpkgs's jj; do not assume
   the version in this flake is the one at runtime.
@@ -62,8 +68,10 @@ nix build .#rookery-tui
 nix build .#rookery-legacy
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+bash tests/reap.sh
 ```
 
 `nix flake check` builds `checks.rookery-board`, `checks.rookery-tasks`,
-`checks.rookery-tui`, and `checks.rookery-parity` (the shell oracle against the
-Rust CLI). CI runs all of the above on every push and pull request.
+`checks.rookery-reap`, `checks.rookery-tui`, and `checks.rookery-parity` (the
+shell oracle against the Rust CLI). CI runs all of the above on every push and
+pull request.

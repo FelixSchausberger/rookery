@@ -84,6 +84,7 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 | `rookery done [--force] <task>`                                     | remove a finished workspace                                    |
 | `rookery rm [--force] <task>`                                       | remove a workspace                                             |
 | `rookery gc`                                                        | reclaim empty and merged workspaces idle past the age gate     |
+| `rookery reap [--dry-run]`                                          | export and delete conversations whose workspace is gone        |
 
 `rookery ls --counts` prints eight integers in this order: total, empty, merged,
 unpushed, in-flight, conflict, stale, waitold. The order is a consumer contract.
@@ -197,6 +198,22 @@ read counts as live; `rookery` never kills.
 
 Deletion goes through `rip`, so a mistaken reclaim is restorable.
 
+## Session lifecycle
+
+`rookery gc` removes a stale directory but leaves its conversation in the agent
+store. `rookery reap` closes that gap: a top-level session whose directory no
+longer exists is exported member by member to
+`${ROOKERY_SESSION_ARCHIVE:-$XDG_DATA_HOME/rookery/sessions}/<session>/`, every
+export is validated as JSON, and only then is the session tree deleted through
+the agent CLI. One failed export keeps the whole tree; a directory that still
+exists, or a subdirectory of one, is never touched. `--dry-run` lists the
+candidates without exporting or deleting.
+
+The reaper uses the same agent entry point as the seats: `opencode2` when
+`ROOKERY_V2=1`, `opencode` otherwise, overridable with `ROOKERY_AGENT_BIN`. The
+module's `gc` service runs `gc` and then `reap`; a host without the agent
+database reports it and exits cleanly.
+
 ## Configuration
 
 The module options cover the base directory, workspace prefix, trunk, gc gates
@@ -226,6 +243,8 @@ The TUI has no environment counterpart.
 ## Environment
 
 - `ROOKERY_V2=1` runs the `opencode2` entry point instead of `opencode`
+- `ROOKERY_AGENT_BIN` overrides the agent CLI used by seats and `reap`
+- `ROOKERY_SESSION_ARCHIVE` sets the `reap` export directory
 - `ROOKERY_BOARD_JOBS` (default 8, clamped 1-32) bounds the board's parallel work
 - `ROOKERY_LIVE_EXCLUDE` adds a `grep -E` pattern to the liveness exclusion
 - `ROOKERY_HOOK_{PRE,POST}_{CREATE,DELETE}` run around create and remove, with
@@ -256,6 +275,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 bash tests/board.sh
 bash tests/tasks.sh
+bash tests/reap.sh
 ```
 
 `tests/board.sh` builds a throwaway jj repository with a local git origin and
