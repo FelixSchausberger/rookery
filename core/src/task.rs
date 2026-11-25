@@ -218,8 +218,11 @@ impl Store {
             let Some(index) = store.tasks.iter().position(|task| task.id == id) else {
                 return Err(Error::refused(format!("rookery: no task named {id}")));
             };
-            if store.tasks[index].status == ARCHIVED {
-                return Err(Error::refused(format!("rookery: task {id} is archived")));
+            if store.tasks[index].status != OPEN {
+                return Err(Error::refused(format!(
+                    "rookery: task {id} is {}; only an open task can be a child",
+                    store.tasks[index].status
+                )));
             }
             validate_parent(store, id, parent)?;
             let now = now_secs();
