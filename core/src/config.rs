@@ -24,7 +24,11 @@ const FALLBACK: &[&str] = &[
     "HOOK_POST_DELETE",
 ];
 
-const DEFAULT_LIVE_EXCLUDE: &str = r"(^|/)[^ ]*(mcp-[a-z0-9._-]+-wrapped|nix-language-server)[^ ]*";
+// Per-project LSP and MCP daemons inherit the spawning session's cwd and
+// outlive it. The fleet's nixd wrapper and mcp-language-server do not carry
+// the `-wrapped` suffix the original pattern assumed, so they are listed
+// explicitly; a workspace held only by one of them is idle.
+const DEFAULT_LIVE_EXCLUDE: &str = r"(^|/)[^ ]*(mcp-[a-z0-9._-]+-wrapped|mcp-language-server|nix-language-server|nixd(-attrset-eval)?)[^ ]*";
 
 #[derive(Clone, Debug, Default)]
 pub struct Hooks {
@@ -189,4 +193,26 @@ fn resolve_base(root: &Path) -> Result<PathBuf> {
 #[allow(dead_code)]
 pub fn home_dir() -> PathBuf {
     home()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auxiliary_agent_daemons_are_excluded_from_liveness() {
+        let pattern = Regex::new(DEFAULT_LIVE_EXCLUDE).unwrap();
+        for command in [
+            "/nix/store/abc-nixd/bin/nixd",
+            "nixd-attrset-eval",
+            "/nix/store/abc-mcp-language-server/bin/mcp-language-server --workspace .",
+            "/nix/store/abc-nix-language-server/bin/nix-language-server",
+            "/nix/store/abc-mcp-nixos-wrapped/bin/mcp-nixos-wrapped",
+        ] {
+            assert!(pattern.is_match(command), "not excluded: {command}");
+        }
+        for command in ["opencode", "sleep 30", "/per/etc/nixos"] {
+            assert!(!pattern.is_match(command), "wrongly excluded: {command}");
+        }
+    }
 }

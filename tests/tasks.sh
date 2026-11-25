@@ -89,6 +89,13 @@ jj bookmark track main@origin >/dev/null 2>&1
 jj workspace add "$ROOKERY_BASE/${ws_prefix}alpha" --name alpha -r main@origin -m "alpha: started from main@origin" >/dev/null 2>&1
 jj workspace add "$ROOKERY_BASE/${ws_prefix}beta" --name beta -r main@origin -m "beta: started from main@origin" >/dev/null 2>&1
 
+# `help` is a word, not a task: it prints usage and creates nothing.
+before=$(jj --ignore-working-copy workspace list -T 'name ++ "\n"' | wc -l)
+out=$(rookery help)
+after=$(jj --ignore-working-copy workspace list -T 'name ++ "\n"' | wc -l)
+[ "$before" -eq "$after" ] || fail "rookery help created a workspace"
+printf '%s' "$out" | grep -Fq "Usage:" || fail "rookery help did not print usage: $out"
+
 # A recent session gives the JSON board a conversation title.
 mkdir -p "$XDG_DATA_HOME/opencode"
 sqlite3 "$XDG_DATA_HOME/opencode/opencode.db" \
