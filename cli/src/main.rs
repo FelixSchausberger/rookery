@@ -19,10 +19,11 @@ Usage:
   rookery seat [--json]
   rookery title <text...>
   rookery ls [--counts|--board|--json] [--refresh]
-  rookery task add <title...> [--id ID] [--notes TEXT]
+  rookery task add [--id ID] [--notes TEXT] <title...>
   rookery task assign [--move] <task> <workspace>
   rookery task list [--json]
   rookery task done <task>
+  rookery task note <task> <text...>
   rookery task archive <task>
   rookery clean [--current|<workspace>] [--unmark]
   rookery clean --apply
@@ -174,6 +175,11 @@ enum TaskCmd {
     },
     Done {
         task: String,
+    },
+    Note {
+        task: String,
+        #[arg(required = true, trailing_var_arg = true)]
+        text: Vec<String>,
     },
     Archive {
         task: String,
@@ -412,6 +418,11 @@ fn run_task(config: &Config, command: TaskCmd) -> Result<()> {
         TaskCmd::Done { task } => {
             let lines = rookery_core::ops::task_done(config, &task)?;
             print_lines(&lines);
+            Ok(())
+        }
+        TaskCmd::Note { task, text } => {
+            let message = rookery_core::ops::task_note(config, &task, &text.join(" "))?;
+            println!("{message}");
             Ok(())
         }
         TaskCmd::Archive { task } => {

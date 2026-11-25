@@ -3,9 +3,9 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::jj::{self, State};
 use crate::session::{SessionProvider, SqliteSessions};
-use crate::task::Store;
+use crate::task::{self, Store};
 use crate::util::{now_secs, realpath_m, remove_with_rip, touched_since, valid_task};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -267,10 +267,22 @@ pub fn rip_workspace(config: &Config, task: &str, warnings: &mut Vec<String>) ->
         remove_with_rip(&clean)?;
     }
     let store = Store::new(&config.base);
-    if store.ws_task(task).is_some() && store.drop_ws(task).is_err() {
+    let owner = store.ws_task(task);
+    if owner.is_some() && store.drop_ws(task).is_err() {
         warnings.push(format!(
             "rookery: could not update the task store for '{task}'"
         ));
+    }
+    if let Some(id) = owner {
+        match store.archive_if_empty_done(&id) {
+            Ok(true) => warnings.push(format!(
+                "rookery: task '{id}' archived (no workspaces remain)"
+            )),
+            Ok(false) => {}
+            Err(_) => warnings.push(format!(
+                "rookery: could not archive task '{id}' after removing '{task}'"
+            )),
+        }
     }
     jj::forget(task)?;
     if dir.is_dir() {
@@ -297,6 +309,27 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
     if fetch_first {
         jj::fetch();
     }
+    let store = Store::new(&config.base);
+    let open_tasks: HashMap<String, String> = match store.read() {
+        Ok(state) => {
+            let mut open = HashMap::new();
+            for task in state.tasks {
+                if task.status != task::OPEN {
+                    continue;
+                }
+                let id = task.id;
+                for workspace in task.workspaces {
+                    open.insert(workspace, id.clone());
+                }
+            }
+            open
+        }
+        Err(_) => {
+            return Ok(vec![Line::err(
+                "rookery gc: task store is unreadable; skipping (unknown never means empty)",
+            )]);
+        }
+    };
     let workspaces = jj::workspace_list()?;
     let snapshot = ProcSnapshot::scan(None);
     let provider = SqliteSessions::new(config.session_db.clone());
@@ -340,6 +373,16 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
                     entry.name, entry.name
                 )));
             }
+            continue;
+        }
+        // An open task is an explicit hold: the lead has not finished the
+        // work, so gc must not reclaim a worker between reports even when the
+        // workspace is momentarily empty.
+        if let Some(id) = open_tasks.get(&entry.name) {
+            lines.push(Line::out(format!(
+                "rookery gc: keeping '{}' (task '{id}' open)",
+                entry.name
+            )));
             continue;
         }
         let state = match jj::state(config, &entry.name, Some(&entry.description)) {
@@ -472,6 +515,15 @@ pub fn clean_apply(config: &Config, warnings: &mut Vec<String>) -> Result<Vec<Li
         }
     }
     names.sort();
+    let store = Store::new(&config.base);
+    let tasks = match store.read() {
+        Ok(state) => state.tasks,
+        Err(_) => {
+            return Ok(vec![Line::err(
+                "rookery clean: task store is unreadable; keeping every marked workspace",
+            )]);
+        }
+    };
     let mut removed = 0;
     let mut kept = 0;
     let mut lines = Vec::new();
@@ -497,6 +549,21 @@ pub fn clean_apply(config: &Config, warnings: &mut Vec<String>) -> Result<Vec<Li
             )));
             kept += 1;
             continue;
+        }
+        // A mark is consent to sweep, but not consent to close someone else's
+        // open task. Only the lead's `task done` flips the status.
+        if let Some(task) = tasks
+            .iter()
+            .find(|task| task.workspaces.iter().any(|workspace| workspace == &name))
+        {
+            if task.status == task::OPEN {
+                lines.push(Line::out(format!(
+                    "rookery clean: keeping '{name}' (task '{}' open)",
+                    task.id
+                )));
+                kept += 1;
+                continue;
+            }
         }
         let state = match jj::state(config, &name, None) {
             Ok((state, _)) => state,

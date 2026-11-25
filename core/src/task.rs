@@ -13,6 +13,13 @@ fn default_version() -> u32 {
     1
 }
 
+/// The task lifecycle. `open` groups workspaces and holds them out of every
+/// reclamation path; `done` is the lead's decision that the work is finished
+/// and the marked workspaces may be swept; `archived` is hidden from the board.
+pub const OPEN: &str = "open";
+pub const DONE: &str = "done";
+pub const ARCHIVED: &str = "archived";
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Task {
@@ -140,6 +147,22 @@ impl Store {
         Ok(self.read()?.tasks.into_iter().find(|task| task.id == id))
     }
 
+    /// Workspaces grouped under an open task. GC keeps every one of them,
+    /// whatever jj says about the workspace, until the lead finishes the task.
+    pub fn open_workspaces(&self) -> Result<HashMap<String, String>> {
+        let mut open = HashMap::new();
+        for task in self.read()?.tasks {
+            if task.status != OPEN {
+                continue;
+            }
+            let id = task.id;
+            for workspace in task.workspaces {
+                open.insert(workspace, id.clone());
+            }
+        }
+        Ok(open)
+    }
+
     pub fn ws_task(&self, workspace: &str) -> Option<String> {
         self.read_tolerant().tasks.into_iter().find_map(|task| {
             if task.workspaces.iter().any(|entry| entry == workspace) {
@@ -169,7 +192,7 @@ impl Store {
             store.tasks.push(Task {
                 id: id.to_string(),
                 title: title.to_string(),
-                status: "open".to_string(),
+                status: OPEN.to_string(),
                 workspaces: Vec::new(),
                 notes: notes.to_string(),
                 created: now,
@@ -184,8 +207,11 @@ impl Store {
             let Some(target) = store.tasks.iter().find(|task| task.id == id) else {
                 return Err(Error::refused(format!("rookery: no task named {id}")));
             };
-            if target.status == "archived" {
-                return Err(Error::refused(format!("rookery: task {id} is archived")));
+            if target.status != OPEN {
+                return Err(Error::refused(format!(
+                    "rookery: task {id} is {}; only an open task accepts workspaces",
+                    target.status
+                )));
             }
             let owner = store
                 .tasks
@@ -241,11 +267,65 @@ impl Store {
         })
     }
 
+    pub fn status(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.task(id)?.map(|task| task.status))
+    }
+
+    /// Set the lifecycle state. Callers own the transition; the store only
+    /// refuses a missing task and a corrupt document.
+    pub fn set_status(&self, id: &str, status: &str) -> Result<()> {
+        self.mutate(|store| {
+            let Some(target) = store.tasks.iter_mut().find(|task| task.id == id) else {
+                return Err(Error::refused(format!("rookery: no task named {id}")));
+            };
+            target.status = status.to_string();
+            target.updated = now_secs();
+            Ok(())
+        })
+    }
+
+    /// Append a decision or follow-up to the task's durable notes. The task's
+    /// `updated` stamp is the per-note timestamp; no calendar formatting is
+    /// duplicated in the core.
+    pub fn note(&self, id: &str, text: &str) -> Result<()> {
+        self.mutate(|store| {
+            let Some(target) = store.tasks.iter_mut().find(|task| task.id == id) else {
+                return Err(Error::refused(format!("rookery: no task named {id}")));
+            };
+            if !target.notes.is_empty() && !target.notes.ends_with('\n') {
+                target.notes.push('\n');
+            }
+            target.updated = now_secs();
+            target.notes.push_str(&format!("- {text}"));
+            Ok(())
+        })
+    }
+
+    /// A done task whose last workspace has been removed leaves the board.
+    /// Open tasks stay visible even with zero workspaces: an unstarted task is
+    /// a backlog item, not an archive entry.
+    pub fn archive_if_empty_done(&self, id: &str) -> Result<bool> {
+        self.mutate(|store| {
+            let Some(target) = store.tasks.iter_mut().find(|task| task.id == id) else {
+                return Ok(false);
+            };
+            if target.status != DONE || !target.workspaces.is_empty() {
+                return Ok(false);
+            }
+            target.status = ARCHIVED.to_string();
+            target.updated = now_secs();
+            Ok(true)
+        })
+    }
+
     pub fn archive(&self, id: &str) -> Result<()> {
         self.mutate(|store| {
             let Some(target) = store.tasks.iter().find(|task| task.id == id) else {
                 return Err(Error::refused(format!("rookery: no task named {id}")));
             };
+            if target.status == ARCHIVED {
+                return Err(Error::refused(format!("rookery: task {id} is archived")));
+            }
             if !target.workspaces.is_empty() {
                 return Err(Error::refused(format!(
                     "rookery: task {id} still has workspaces; run task done and clean --apply first"
@@ -254,7 +334,7 @@ impl Store {
             let now = now_secs();
             for task in &mut store.tasks {
                 if task.id == id {
-                    task.status = "archived".to_string();
+                    task.status = ARCHIVED.to_string();
                     task.updated = now;
                 }
             }
@@ -348,6 +428,42 @@ mod tests {
         store.add("with-ws", "With a workspace", "").unwrap();
         store.assign("with-ws", "kept", false).unwrap();
         assert!(store.archive("with-ws").is_err());
+    }
+
+    #[test]
+    fn done_gate_notes_and_auto_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.add("t", "T", "").unwrap();
+        store.note("t", "first").unwrap();
+        store.note("t", "second").unwrap();
+        assert_eq!(store.task("t").unwrap().unwrap().notes, "- first\n- second");
+        store.assign("t", "ws", false).unwrap();
+        store.set_status("t", DONE).unwrap();
+        assert!(store.assign("t", "other", false).is_err());
+        assert!(!store.archive_if_empty_done("t").unwrap());
+        store.drop_ws("ws").unwrap();
+        assert!(store.archive_if_empty_done("t").unwrap());
+        assert_eq!(store.status("t").unwrap().as_deref(), Some(ARCHIVED));
+        assert!(!store.archive_if_empty_done("t").unwrap());
+    }
+
+    #[test]
+    fn open_workspaces_excludes_done_and_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        store.add("open", "Open", "").unwrap();
+        store.add("done", "Done", "").unwrap();
+        store.add("archived", "Archived", "").unwrap();
+        store.assign("open", "ws-open", false).unwrap();
+        store.assign("done", "ws-done", false).unwrap();
+        store.assign("archived", "ws-archived", false).unwrap();
+        store.set_status("done", DONE).unwrap();
+        store.set_status("archived", ARCHIVED).unwrap();
+        let open = store.open_workspaces().unwrap();
+        assert_eq!(open.get("ws-open").map(String::as_str), Some("open"));
+        assert!(!open.contains_key("ws-done"));
+        assert!(!open.contains_key("ws-archived"));
     }
 
     #[test]
