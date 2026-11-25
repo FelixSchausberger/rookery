@@ -249,6 +249,37 @@ rookery open beta | grep -Fq "opened 'beta'" || fail "open did not report the wo
 grep -Fqx "focus w1:t1" "$FAKE_HERDR_LOG" || fail "open did not focus the pane's tab"
 rookery task assign board-task beta >/dev/null
 rookery open board-task | grep -Fq "opened 'beta'" || fail "open by task did not resolve beta"
+
+# With no pane in the workspace, open starts a seat in a new tab and reuses the
+# existing workspace instead of creating another one.
+export FAKE_PANE_CWD=/nonexistent
+: >"$FAKE_HERDR_LOG"
+out=$(rookery open beta)
+printf '%s' "$out" | grep -Fq "opened 'beta' in a new tab" || fail "open did not start a seat: $out"
+grep -Fqx "run cd $ROOKERY_BASE/${ws_prefix}beta && exec opencode" "$FAKE_HERDR_LOG" || fail "open did not run the agent in the workspace: $(cat "$FAKE_HERDR_LOG")"
+if grep -q '^focus ' "$FAKE_HERDR_LOG"; then fail "open focused a tab while starting a seat"; fi
+if jj --ignore-working-copy workspace list -T 'name ++ "\n"' | grep -qx "beta-2"; then fail "open created a second workspace"; fi
+
+# A task target resolves and starts the same way.
+: >"$FAKE_HERDR_LOG"
+out=$(rookery open board-task)
+printf '%s' "$out" | grep -Fq "opened 'beta' in a new tab" || fail "open by task did not start beta: $out"
+grep -Fqx "run cd $ROOKERY_BASE/${ws_prefix}beta && exec opencode" "$FAKE_HERDR_LOG" || fail "open by task ran in the wrong workspace: $(cat "$FAKE_HERDR_LOG")"
+
+# A live workspace still refuses a second agent.
+(
+	cd "$ROOKERY_BASE/${ws_prefix}beta"
+	exec sleep 30
+) &
+sleeper=$!
+sleep 0.3
+: >"$FAKE_HERDR_LOG"
+if out=$(rookery open beta 2>&1); then fail "open started an agent in a live workspace"; fi
+printf '%s' "$out" | grep -Fq "already has a live session" || fail "open did not report the live workspace: $out"
+[ ! -s "$FAKE_HERDR_LOG" ] || fail "open started a pane in a live workspace: $(cat "$FAKE_HERDR_LOG")"
+kill "$sleeper" 2>/dev/null || true
+wait "$sleeper" 2>/dev/null || true
+
 if rookery open missing 2>/dev/null; then fail "open accepted an unknown name"; fi
 if rookery open default 2>/dev/null; then fail "open accepted the primary checkout"; fi
 

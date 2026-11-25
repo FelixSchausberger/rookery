@@ -162,7 +162,9 @@ scenario() {
 	# The task lifecycle is deliberately not parity-compared: the frozen v0.4
 	# shell only marks workspaces, while the Rust core sets the task status and
 	# holds open tasks out of gc. tests/tasks.sh owns those semantics.
-	record "$work" "$bin" open alpha
+	# `open` without a pane starts a seat in the Rust CLI, while the frozen
+	# v0.4.0 shell still errors; tests/tasks.sh owns that path. Parity compares
+	# only the shared focus behavior.
 	FAKE_PANE_CWD="$ROOKERY_BASE/ws-alpha"
 	export FAKE_PANE_CWD
 	record "$work" "$bin" open alpha

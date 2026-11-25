@@ -127,7 +127,7 @@ enum Cmd {
         current: bool,
         target: Option<String>,
     },
-    /// Focus a workspace's seat.
+    /// Focus a workspace's seat, starting one in a new tab when none runs.
     Open { target: String },
     /// Park a workspace so gc keeps it.
     Wait {

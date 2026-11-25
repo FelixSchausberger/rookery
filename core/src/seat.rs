@@ -250,20 +250,34 @@ pub fn open(config: &Config, target: &str) -> Result<String> {
     let dir = realpath_m(&jj::ws_root_for(config, &workspace)?);
     let panes = pane_list(&config.herdr_bin)
         .map_err(|err| Error::message(format!("rookery open: {err}")))?;
-    let pane = panes
-        .iter()
-        .find(|pane| {
-            let cwd = pane
-                .foreground_cwd
-                .as_deref()
-                .or(pane.cwd.as_deref())
-                .unwrap_or_default();
-            let path = Path::new(cwd);
-            path == dir || path.starts_with(&dir)
-        })
-        .ok_or_else(|| {
-            Error::message(format!("rookery open: no herdr pane runs in '{workspace}'"))
+    let pane = panes.iter().find(|pane| {
+        let cwd = pane
+            .foreground_cwd
+            .as_deref()
+            .or(pane.cwd.as_deref())
+            .unwrap_or_default();
+        let path = Path::new(cwd);
+        path == dir || path.starts_with(&dir)
+    });
+    let Some(pane) = pane else {
+        // No seat is running: start one for the resolved workspace through the
+        // same path `rookery herdr <workspace>` uses, so the envrc approval,
+        // the live-session refusal and the tab layout stay in one place.
+        herdr(
+            config,
+            &HerdrOptions {
+                focus: true,
+                task: Some(workspace.clone()),
+                ..HerdrOptions::default()
+            },
+        )
+        .map_err(|err| {
+            let text = err.to_string();
+            let text = text.strip_prefix("rookery herdr: ").unwrap_or(&text);
+            Error::message(format!("rookery open: {text}"))
         })?;
+        return Ok(format!("rookery: opened '{workspace}' in a new tab"));
+    };
     if pane.tab_id.is_empty() {
         return Err(Error::message("rookery open: the pane has no tab id"));
     }
