@@ -105,7 +105,10 @@ impl Board {
                 ))
             })?;
         let op_id = jj::op_id().filter(|value| !value.is_empty());
-        let repo_id = jj::repo_id(&config.root);
+        let repo_id = config
+            .repo_id
+            .get_or_init(|| jj::repo_id(&config.root))
+            .clone();
         let cache = BoardCache::new(&config.cache_dir, &repo_id);
         let key = cache_key(&op_id, &main_cid, &workspaces, &roots);
         let provider = SqliteSessions::new(config.session_db.clone());
@@ -933,11 +936,9 @@ mod tests {
             .find(|lane| lane.lane == Lane::Backlog)
             .unwrap();
         assert_eq!(backlog.tasks.len(), 1);
-        assert!(
-            lanes
-                .iter()
-                .all(|lane| lane.tasks.iter().all(|view| view.title != "Done task"))
-        );
+        assert!(lanes
+            .iter()
+            .all(|lane| lane.tasks.iter().all(|view| view.title != "Done task")));
         assert!(lanes.iter().all(|lane| {
             lane.tasks
                 .iter()
