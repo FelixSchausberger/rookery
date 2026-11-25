@@ -936,9 +936,11 @@ mod tests {
             .find(|lane| lane.lane == Lane::Backlog)
             .unwrap();
         assert_eq!(backlog.tasks.len(), 1);
-        assert!(lanes
-            .iter()
-            .all(|lane| lane.tasks.iter().all(|view| view.title != "Done task")));
+        assert!(
+            lanes
+                .iter()
+                .all(|lane| lane.tasks.iter().all(|view| view.title != "Done task"))
+        );
         assert!(lanes.iter().all(|lane| {
             lane.tasks
                 .iter()

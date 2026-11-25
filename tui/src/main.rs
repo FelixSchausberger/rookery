@@ -11,15 +11,15 @@ use backend::{Backend, CoreBackend};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use model::Board;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use rookery_core::util::now_secs;
 use std::io;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -56,10 +56,12 @@ fn run(
 ) -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let loader = Arc::clone(&backend);
-    thread::spawn(move || loop {
-        thread::sleep(REFRESH);
-        if tx.send(loader.load()).is_err() {
-            break;
+    thread::spawn(move || {
+        loop {
+            thread::sleep(REFRESH);
+            if tx.send(loader.load()).is_err() {
+                break;
+            }
         }
     });
 
