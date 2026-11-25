@@ -874,6 +874,10 @@ impl App {
             self.set_error("assign the workspace to a task first");
             return None;
         };
+        if !card.children().is_empty() {
+            self.set_error("a task with children cannot become a child");
+            return None;
+        }
         let current = card.parent().map(str::to_string);
         let selected = current
             .and_then(|parent| {
