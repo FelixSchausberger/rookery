@@ -75,9 +75,9 @@ in {
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage "${inputs.self}/packages/rookery.nix" {};
-      defaultText = lib.literalExpression "the Rookery package from this flake";
-      description = "The Rookery package to wrap with the options below.";
+      default = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.rookery;
+      defaultText = lib.literalExpression "the Rust Rookery package from this flake";
+      description = "The Rookery package to wrap with the options below. The legacy shell command remains available as `rookery-legacy`.";
     };
 
     base = lib.mkOption {
