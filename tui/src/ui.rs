@@ -452,7 +452,7 @@ fn hint(app: &App) -> String {
         } else if app.expanded.as_ref() == Some(&card.key) {
             "enter open  d mark  space collapse  i detail  ? help".to_string()
         } else {
-            "enter open  d mark  s seat  space expand  i detail  ? help".to_string()
+            "enter open  d mark  space expand  i detail  ? help".to_string()
         }
     } else {
         "enter open  d mark  a assign  space expand  ? help".to_string()
@@ -466,7 +466,9 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut hints = vec!["enter open", "d mark"];
     if card.id().is_some() {
-        hints.push("s seat");
+        if card.workspaces().is_empty() {
+            hints.push("s seat");
+        }
     } else {
         hints.push("a assign");
     }
@@ -622,7 +624,7 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  enter   open the selected conversation's seat"),
         Line::raw("  d       mark the task (or this workspace) for cleanup"),
         Line::raw("  n       create a backlog task"),
-        Line::raw("  s       start a seat for the task"),
+        Line::raw("  s       start a seat for a task with no workspace"),
         Line::raw("  a       assign the selected ungrouped workspace"),
         Line::raw("  /       filter cards"),
         Line::raw("  f       cycle filter presets"),
