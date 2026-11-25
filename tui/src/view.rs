@@ -50,24 +50,10 @@ impl Filter {
     pub fn matches(self, card: &Card) -> bool {
         match self {
             Self::All => true,
-            Self::Attention => card
-                .workspaces()
-                .iter()
-                .any(|workspace| workspace.wait.is_some() || workspace.state == State::Conflict),
-            Self::Live => card
-                .workspaces()
-                .iter()
-                .any(|workspace| workspace.hold == Hold::Live),
-            Self::Unpushed => card
-                .workspaces()
-                .iter()
-                .any(|workspace| workspace.state == State::Unpushed),
-            Self::Reclaimable => card.workspaces().iter().any(|workspace| {
-                workspace.clean.is_some()
-                    || (workspace.hold == Hold::Idle
-                        && workspace.wait.is_none()
-                        && matches!(workspace.state, State::Empty | State::Merged))
-            }),
+            Self::Attention => card.oldest_wait().is_some() || card.has_state(State::Conflict),
+            Self::Live => card.has_hold(Hold::Live),
+            Self::Unpushed => card.has_state(State::Unpushed),
+            Self::Reclaimable => card.any_reclaimable(),
         }
     }
 }
@@ -156,6 +142,9 @@ pub struct Card {
     pub key: CardKey,
     pub view: TaskView,
     pub task: Option<Task>,
+    /// Child task cards in presentation order. Lanes belong to the root; a
+    /// child is rendered under it and never appears as a lane entry.
+    pub children: Vec<Card>,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +172,9 @@ pub fn build(board: &Board, now: i64, filter: Filter, query: &str, sort: Sort) -
                 .filter(|card| filter.matches(card) && matches_query(card, query))
                 .collect();
             sort_cards(&mut cards, sort, now);
+            for card in &mut cards {
+                sort_children(card, sort, now);
+            }
             LaneModel {
                 lane: lane.lane,
                 cards,
@@ -225,7 +217,10 @@ pub fn matches_query(card: &Card, query: &str) -> bool {
                 .and_then(|session| session.title.as_deref())
                 .map(|title| title.to_lowercase().contains(&query))
                 .unwrap_or(false)
-    })
+    }) || card
+        .children
+        .iter()
+        .any(|child| matches_query(child, &query))
 }
 
 impl Card {
@@ -245,7 +240,18 @@ impl Card {
                     .unwrap_or_else(|| view.title.clone()),
             ),
         };
-        Self { key, view, task }
+        let children = view
+            .children
+            .iter()
+            .cloned()
+            .map(|child| Card::new(child, tasks))
+            .collect();
+        Self {
+            key,
+            view,
+            task,
+            children,
+        }
     }
 
     pub fn title(&self) -> &str {
@@ -256,6 +262,10 @@ impl Card {
         self.view.id.as_deref()
     }
 
+    pub fn parent(&self) -> Option<&str> {
+        self.view.parent.as_deref()
+    }
+
     pub fn is_standalone(&self) -> bool {
         self.view.id.is_none()
     }
@@ -264,23 +274,88 @@ impl Card {
         &self.view.workspaces
     }
 
-    pub fn oldest_wait(&self) -> Option<&Wait> {
-        self.workspaces()
+    pub fn children(&self) -> &[Card] {
+        &self.children
+    }
+
+    pub fn node_count(&self) -> usize {
+        1 + self.children.iter().map(Card::node_count).sum::<usize>()
+    }
+
+    pub fn workspace_count(&self) -> usize {
+        self.all_workspaces().len()
+    }
+
+    pub fn all_workspaces(&self) -> Vec<&Workspace> {
+        let mut workspaces = Vec::new();
+        self.collect_workspaces(&mut workspaces);
+        workspaces
+    }
+
+    fn collect_workspaces<'a>(&'a self, out: &mut Vec<&'a Workspace>) {
+        out.extend(self.workspaces());
+        for child in &self.children {
+            child.collect_workspaces(out);
+        }
+    }
+
+    fn all_cards(&self) -> Vec<&Card> {
+        let mut cards = Vec::new();
+        self.collect_cards(&mut cards);
+        cards
+    }
+
+    fn collect_cards<'a>(&'a self, out: &mut Vec<&'a Card>) {
+        out.push(self);
+        for child in &self.children {
+            child.collect_cards(out);
+        }
+    }
+
+    pub fn has_state(&self, state: State) -> bool {
+        self.all_workspaces()
             .iter()
+            .any(|workspace| workspace.state == state)
+    }
+
+    pub fn has_hold(&self, hold: Hold) -> bool {
+        self.all_workspaces()
+            .iter()
+            .any(|workspace| workspace.hold == hold)
+    }
+
+    pub fn has_clean(&self) -> bool {
+        self.all_workspaces()
+            .iter()
+            .any(|workspace| workspace.clean.is_some())
+    }
+
+    pub fn any_reclaimable(&self) -> bool {
+        self.all_workspaces().iter().any(|workspace| {
+            workspace.clean.is_some()
+                || (workspace.hold == Hold::Idle
+                    && workspace.wait.is_none()
+                    && matches!(workspace.state, State::Empty | State::Merged))
+        })
+    }
+
+    pub fn oldest_wait(&self) -> Option<&Wait> {
+        self.all_workspaces()
+            .into_iter()
             .filter_map(|workspace| workspace.wait.as_ref())
             .max_by_key(|wait| wait.age)
     }
 
     pub fn oldest_clean(&self) -> Option<&Clean> {
-        self.workspaces()
-            .iter()
+        self.all_workspaces()
+            .into_iter()
             .filter_map(|workspace| workspace.clean.as_ref())
             .max_by_key(|clean| clean.age)
     }
 
     fn latest_session_title(&self) -> Option<(&str, i64)> {
-        self.workspaces()
-            .iter()
+        self.all_workspaces()
+            .into_iter()
             .filter_map(|workspace| workspace.session.as_ref())
             .filter_map(|session| {
                 session
@@ -291,23 +366,24 @@ impl Card {
             .max_by_key(|(_, updated)| *updated)
     }
 
-    /// The newest timestamp that describes the card: the task's own update,
-    /// a recent session, or the workspace target's commit. The card label is
-    /// always "updated <age>"; the detail pane can say which one it is.
+    /// The newest timestamp that describes the card subtree: a task's own
+    /// update, a recent session, or a workspace target's commit.
     pub fn activity_time(&self, now: i64) -> Option<i64> {
         let task_time = self
-            .task
-            .as_ref()
+            .all_cards()
+            .into_iter()
+            .filter_map(|card| card.task.as_ref())
             .map(|task| task.updated)
-            .filter(|time| *time > 0);
+            .filter(|time| *time > 0)
+            .max();
         let session_time = self
-            .workspaces()
-            .iter()
+            .all_workspaces()
+            .into_iter()
             .filter_map(|workspace| workspace.session.as_ref()?.updated)
             .max();
         let workspace_time = self
-            .workspaces()
-            .iter()
+            .all_workspaces()
+            .into_iter()
             .map(|workspace| now - workspace.age)
             .max();
         task_time
@@ -323,12 +399,12 @@ impl Card {
 
     fn holds_label(&self) -> Option<String> {
         let live = self
-            .workspaces()
+            .all_workspaces()
             .iter()
             .filter(|workspace| workspace.hold == Hold::Live)
             .count();
         let session = self
-            .workspaces()
+            .all_workspaces()
             .iter()
             .filter(|workspace| workspace.hold == Hold::Session)
             .count();
@@ -358,7 +434,7 @@ impl Card {
             State::Empty,
         ] {
             let count = self
-                .workspaces()
+                .all_workspaces()
                 .iter()
                 .filter(|workspace| workspace.state == state)
                 .count();
@@ -373,6 +449,16 @@ impl Card {
             parts.push(format!("clean {}", relative_age(clean.age)));
         }
         if parts.is_empty() {
+            if !self.children.is_empty() {
+                return Some(truncate(
+                    &format!(
+                        "{} child task{}",
+                        self.children.len(),
+                        plural_s(self.children.len())
+                    ),
+                    width,
+                ));
+            }
             if self.workspaces().is_empty() {
                 return Some(truncate("press s to start a seat", width));
             }
@@ -402,13 +488,17 @@ impl Card {
         if let Some(holds) = self.holds_label() {
             return Some(holds);
         }
-        if !self.workspaces().is_empty()
-            && self
-                .workspaces()
-                .iter()
-                .all(|workspace| workspace.clean.is_some())
-            && self
-                .workspaces()
+        if !self.children.is_empty() {
+            return Some(format!(
+                "{} child task{}",
+                self.children.len(),
+                plural_s(self.children.len())
+            ));
+        }
+        let workspaces = self.all_workspaces();
+        if !workspaces.is_empty()
+            && workspaces.iter().all(|workspace| workspace.clean.is_some())
+            && workspaces
                 .iter()
                 .any(|workspace| workspace.state == State::Unpushed)
         {
@@ -468,13 +558,18 @@ impl Card {
         } else {
             self.view.title.trim()
         };
+        let title = if self.parent().is_some() {
+            format!("↳ {title}")
+        } else {
+            title.to_string()
+        };
         let count = if !self.is_standalone() && !self.workspaces().is_empty() {
             format!(" ({})", self.workspaces().len())
         } else {
             String::new()
         };
         let title_width = available.saturating_sub(display_width(&count));
-        let heading = format!("{}{count}", truncate(title, title_width));
+        let heading = format!("{}{count}", truncate(&title, title_width));
         let style = if selected {
             Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
@@ -491,6 +586,13 @@ impl Card {
                 detail.push_str(" · ");
             }
             detail.push_str(&context);
+        }
+        if !self.children().is_empty() {
+            detail = if detail.is_empty() {
+                format!("lead · {} sub", self.children().len())
+            } else {
+                format!("lead · {} sub · {detail}", self.children().len())
+            };
         }
         if !detail.is_empty() {
             lines.push(Line::styled(
@@ -532,7 +634,12 @@ impl Card {
         } else {
             self.view.title.trim()
         };
-        let wrapped = wrap(title, title_width, 2);
+        let title = if self.parent().is_some() {
+            format!("↳ {title}")
+        } else {
+            title.to_string()
+        };
+        let wrapped = wrap(&title, title_width, 2);
         if wrapped.is_empty() {
             content.push(Line::from(vec![Span::raw(String::new())]));
         } else {
@@ -551,6 +658,9 @@ impl Card {
         let mut meta = Vec::new();
         if let Some(id) = self.id() {
             meta.push(format!("#{id}"));
+        }
+        if !self.children.is_empty() {
+            meta.push(format!("{} sub", self.children.len()));
         }
         if let Some(age) = self.activity_age(now) {
             meta.push(format!("updated {}", relative_age(age)));
@@ -649,82 +759,48 @@ fn sort_cards(cards: &mut [Card], sort: Sort, now: i64) {
     });
 }
 
+fn sort_children(card: &mut Card, sort: Sort, now: i64) {
+    sort_cards(&mut card.children, sort, now);
+    for child in &mut card.children {
+        sort_children(child, sort, now);
+    }
+}
+
 fn attention_key(card: &Card) -> (u8, Reverse<i64>) {
     if let Some(wait) = card.oldest_wait() {
         return (0, Reverse(wait.age));
     }
-    if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.state == State::Conflict)
-    {
+    if card.has_state(State::Conflict) {
         return (1, Reverse(0));
     }
-    if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.state == State::Unpushed)
-    {
+    if card.has_state(State::Unpushed) {
         return (2, Reverse(0));
     }
-    if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.hold == Hold::Live)
-    {
+    if card.has_hold(Hold::Live) {
         return (3, Reverse(0));
     }
-    if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.state == State::InFlight)
-    {
+    if card.has_state(State::InFlight) {
         return (4, Reverse(0));
     }
-    if card.workspaces().is_empty() {
+    if card.all_workspaces().is_empty() {
         return (7, Reverse(0));
     }
-    if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.clean.is_some())
-    {
+    if card.has_clean() {
         return (6, Reverse(0));
     }
     (5, Reverse(0))
 }
 
 fn accent_color(card: &Card) -> Color {
-    if card.oldest_wait().is_some()
-        || card
-            .workspaces()
-            .iter()
-            .any(|workspace| workspace.state == State::Conflict)
-    {
+    if card.oldest_wait().is_some() || card.has_state(State::Conflict) {
         Color::Red
-    } else if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.state == State::Unpushed)
-    {
+    } else if card.has_state(State::Unpushed) {
         Color::Yellow
-    } else if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.hold == Hold::Live)
-    {
+    } else if card.has_hold(Hold::Live) {
         Color::Green
-    } else if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.state == State::InFlight)
-    {
+    } else if card.has_state(State::InFlight) {
         Color::Blue
-    } else if card
-        .workspaces()
-        .iter()
-        .any(|workspace| workspace.clean.is_some())
-    {
+    } else if card.has_clean() {
         Color::Magenta
     } else {
         Color::DarkGray
@@ -905,6 +981,14 @@ pub fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     lines
 }
 
+fn plural_s(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
 pub fn relative_age(seconds: i64) -> String {
     let seconds = seconds.max(0);
     if seconds < 60 {
@@ -941,12 +1025,15 @@ mod tests {
         let view = TaskView {
             id: Some(id.to_string()),
             title: title.to_string(),
+            parent: None,
             workspaces,
+            children: Vec::new(),
         };
         Card {
             key: CardKey::Task(id.to_string()),
             view,
             task: None,
+            children: Vec::new(),
         }
     }
 

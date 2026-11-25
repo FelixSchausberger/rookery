@@ -80,6 +80,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 workspace,
                 selected,
             } => render_assign(frame, area, app, workspace, *selected),
+            Mode::Parent { child, selected } => render_parent(frame, area, app, child, *selected),
             Mode::Filter { .. } => render_filter(frame, area, &app.query),
             Mode::Normal | Mode::Help => {}
         }
@@ -100,9 +101,9 @@ struct Summary {
 fn summary(app: &App) -> Summary {
     let mut summary = Summary::default();
     for lane in &app.lanes {
-        summary.cards += lane.cards.len();
         for card in &lane.cards {
-            for workspace in card.workspaces() {
+            summary.cards += card.node_count();
+            for workspace in card.all_workspaces() {
                 summary.workspaces += 1;
                 match workspace.hold {
                     Hold::Live => summary.live += 1,
@@ -186,9 +187,23 @@ fn render_lane_bar(frame: &mut Frame, area: Rect, app: &App) {
     let mut spans = Vec::new();
     for (index, lane) in app.lanes.iter().enumerate() {
         let label = if full {
-            format!("{} {}", lane.lane.title(), lane.cards.len())
+            format!(
+                "{} {}",
+                lane.lane.title(),
+                lane.cards
+                    .iter()
+                    .map(|card| card.node_count())
+                    .sum::<usize>()
+            )
         } else {
-            format!("{}{}", short_lane(lane.lane), lane.cards.len())
+            format!(
+                "{}{}",
+                short_lane(lane.lane),
+                lane.cards
+                    .iter()
+                    .map(|card| card.node_count())
+                    .sum::<usize>()
+            )
         };
         let text = if index == app.cursor.lane {
             format!("[{label}]")
@@ -300,14 +315,10 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide_
     let selected = app.cursor.lane == index;
     let label = {
         let lane = &app.lanes[index];
-        let workspaces: usize = lane.cards.iter().map(|card| card.workspaces().len()).sum();
+        let cards: usize = lane.cards.iter().map(|card| card.node_count()).sum();
+        let workspaces: usize = lane.cards.iter().map(|card| card.workspace_count()).sum();
         truncate(
-            &format!(
-                "{} {} · {}ws",
-                lane.lane.title(),
-                lane.cards.len(),
-                workspaces
-            ),
+            &format!("{} {} · {}ws", lane.lane.title(), cards, workspaces),
             area.width as usize,
         )
     };
@@ -365,6 +376,8 @@ fn render_lane(frame: &mut Frame, area: Rect, app: &mut App, index: usize, wide_
     }
 }
 
+const CHILD_INDENT: usize = 2;
+
 fn lane_lines(
     app: &App,
     index: usize,
@@ -383,29 +396,91 @@ fn lane_lines(
     }
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut cursor = None;
-    for (card_index, card) in lane.cards.iter().enumerate() {
-        let selected = app.cursor.lane == index && app.cursor.card == card_index;
-        let expanded = app.expanded.as_ref() == Some(&card.key);
-        let child = if selected { app.cursor.child } else { None };
+    for (card_index, root) in lane.cards.iter().enumerate() {
+        let root_selected =
+            app.cursor.lane == index && app.cursor.card == card_index && app.cursor.node == 0;
+        let root_expanded = app.expanded.contains(&root.key);
         let start = lines.len();
-        let card_lines = if wide {
-            card.lines(
-                width as usize,
-                selected,
-                expanded,
+        lines.extend(card_lines(
+            root,
+            width as usize,
+            root_selected,
+            root_expanded,
+            if root_selected {
+                app.cursor.child
+            } else {
+                None
+            },
+            wide,
+            app.now,
+            app.palette,
+        ));
+        if root_selected {
+            cursor = Some((start, lines.len()));
+        }
+        if !root_expanded {
+            continue;
+        }
+        let child_width = (width as usize).saturating_sub(CHILD_INDENT);
+        for (child_index, child) in root.children().iter().enumerate() {
+            let child_selected = app.cursor.lane == index
+                && app.cursor.card == card_index
+                && app.cursor.node == child_index + 1;
+            let child_expanded = app.expanded.contains(&child.key);
+            let child_start = lines.len();
+            let child_lines = card_lines(
                 child,
+                child_width,
+                child_selected,
+                child_expanded,
+                if child_selected {
+                    app.cursor.child
+                } else {
+                    None
+                },
+                wide,
                 app.now,
                 app.palette,
-            )
-        } else {
-            card.compact_lines(width as usize, selected, expanded, child, app.palette)
-        };
-        lines.extend(card_lines);
-        if selected {
-            cursor = Some((start, lines.len()));
+            );
+            lines.extend(indent_lines(child_lines, CHILD_INDENT));
+            if child_selected {
+                cursor = Some((child_start, lines.len()));
+            }
         }
     }
     (lines, cursor)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn card_lines(
+    card: &crate::view::Card,
+    width: usize,
+    selected: bool,
+    expanded: bool,
+    child: Option<usize>,
+    wide: bool,
+    now: i64,
+    palette: crate::view::Palette,
+) -> Vec<Line<'static>> {
+    if width < 4 {
+        return Vec::new();
+    }
+    if wide {
+        card.lines(width, selected, expanded, child, now, palette)
+    } else {
+        card.compact_lines(width, selected, expanded, child, palette)
+    }
+}
+
+fn indent_lines(mut lines: Vec<Line<'static>>, indent: usize) -> Vec<Line<'static>> {
+    if indent == 0 {
+        return lines;
+    }
+    let prefix = Span::raw(" ".repeat(indent));
+    for line in &mut lines {
+        line.spans.insert(0, prefix.clone());
+    }
+    lines
 }
 
 fn reveal(offset: usize, range: Option<(usize, usize)>, viewport: usize, content: usize) -> usize {
@@ -429,7 +504,7 @@ fn reveal(offset: usize, range: Option<(usize, usize)>, viewport: usize, content
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, detail_allowed: bool) {
     let (text, style) = match &app.mode {
         Mode::Help => ("j k scroll  esc close".to_string(), dim_style()),
-        Mode::TaskInput { .. } | Mode::Assign { .. } => {
+        Mode::TaskInput { .. } | Mode::Assign { .. } | Mode::Parent { .. } => {
             ("enter confirm   esc cancel".to_string(), dim_style())
         }
         Mode::Filter { .. } => ("enter keep   esc cancel".to_string(), dim_style()),
@@ -457,9 +532,9 @@ fn hint(app: &App) -> String {
         return "n new  ? help  q quit".to_string();
     };
     if card.id().is_some() {
-        if card.workspaces().is_empty() {
+        if card.workspaces().is_empty() && card.children().is_empty() {
             "s seat  n new  i detail  ? help".to_string()
-        } else if app.expanded.as_ref() == Some(&card.key) {
+        } else if app.expanded.contains(&card.key) {
             "enter open  d mark  space collapse  i detail  ? help".to_string()
         } else {
             "enter open  d mark  space expand  i detail  ? help".to_string()
@@ -476,9 +551,10 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut hints = vec!["enter open", "d mark"];
     if card.id().is_some() {
-        if card.workspaces().is_empty() {
+        if card.workspaces().is_empty() && card.children().is_empty() {
             hints.push("s seat");
         }
+        hints.push("p parent");
     } else {
         hints.push("a assign");
     }
@@ -494,6 +570,12 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         ));
     }
     lines.push(Line::styled(truncate(card.title(), width), title_style()));
+    if let Some(parent) = card.parent() {
+        lines.push(Line::styled(
+            truncate(&format!("child of {parent}"), width),
+            dim_style(),
+        ));
+    }
     if let Some(task) = &card.task {
         let mut meta = Vec::new();
         if task.created > 0 {
@@ -514,6 +596,24 @@ fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             for line in wrap(notes, width, 4) {
                 lines.push(Line::styled(line, dim_style()));
             }
+        }
+    }
+
+    if !card.children().is_empty() {
+        lines.push(Line::styled("children", dim_style()));
+        for child in card.children() {
+            let id = child.id().unwrap_or("?");
+            lines.push(Line::styled(
+                truncate(
+                    &format!(
+                        "↳ {id}  {}  ({} ws)",
+                        child.title(),
+                        child.workspaces().len()
+                    ),
+                    width,
+                ),
+                dim_style(),
+            ));
         }
     }
 
@@ -636,6 +736,7 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw("  n       create a backlog task"),
         Line::raw("  s       start a seat for a task with no workspace"),
         Line::raw("  a       assign the selected ungrouped workspace"),
+        Line::raw("  p       set or clear the selected task's parent"),
         Line::raw("  /       filter cards"),
         Line::raw("  f       cycle filter presets"),
         Line::raw("  space   expand or collapse the selected card"),
@@ -731,6 +832,44 @@ fn render_assign(frame: &mut Frame, area: Rect, app: &App, workspace: &str, sele
     );
 }
 
+fn render_parent(frame: &mut Frame, area: Rect, app: &App, child: &str, selected: usize) {
+    let parents = app.open_parents(child);
+    let current = app.selected_card().and_then(|card| card.parent());
+    let height = (parents.len() as u16 + 3).clamp(3, 16);
+    let rect = centered_rect(60, height, area);
+    frame.render_widget(Clear, rect);
+    let visible = height.saturating_sub(2) as usize;
+    let offset = if selected >= visible {
+        selected + 1 - visible
+    } else {
+        0
+    };
+    let mut rows: Vec<Line> = Vec::new();
+    for index in offset..=parents.len().min(offset + visible - 1) {
+        let (label, is_current) = if index == 0 {
+            ("— clear parent —".to_string(), current.is_none())
+        } else {
+            let (id, title) = parents[index - 1];
+            (format!("{id}  {title}"), current == Some(id))
+        };
+        let marker = if is_current { "* " } else { "  " };
+        let style = if index == selected {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        rows.push(Line::styled(format!("{marker}{label}"), style));
+    }
+    frame.render_widget(
+        Paragraph::new(rows).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("parent of {child}")),
+        ),
+        rect,
+    );
+}
+
 fn render_too_small(frame: &mut Frame, area: Rect) {
     let rect = centered_rect(34, 4, area);
     frame.render_widget(Clear, rect);
@@ -760,7 +899,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 mod tests {
     use crate::app::App;
     use crate::model::{Board, Clean, Hold, Session, State, Task, Wait, Workspace};
-    use crate::view::Palette;
+    use crate::view::{CardKey, Palette};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -884,6 +1023,52 @@ mod tests {
         }
     }
 
+    fn tree_board() -> Board {
+        let mut lead = ws("ws-lead", State::Merged, Hold::Live);
+        lead.task = Some("lead".into());
+        lead.age = 5_400;
+        let mut worker_a = ws("ws-worker-a", State::Unpushed, Hold::Idle);
+        worker_a.task = Some("worker-a".into());
+        worker_a.age = 3_600;
+        let mut worker_b = ws("ws-worker-b", State::Merged, Hold::Idle);
+        worker_b.task = Some("worker-b".into());
+        worker_b.age = 7_200;
+        Board {
+            workspaces: vec![lead, worker_a, worker_b],
+            tasks: vec![
+                Task {
+                    id: "lead".into(),
+                    title: "Lead the release".into(),
+                    status: "open".into(),
+                    workspaces: vec!["ws-lead".into()],
+                    created: NOW - 5 * 86_400,
+                    updated: NOW - 5_400,
+                    ..Task::default()
+                },
+                Task {
+                    id: "worker-a".into(),
+                    title: "Draft the notes".into(),
+                    status: "open".into(),
+                    parent: Some("lead".into()),
+                    workspaces: vec!["ws-worker-a".into()],
+                    created: NOW - 4 * 86_400,
+                    updated: NOW - 3_600,
+                    ..Task::default()
+                },
+                Task {
+                    id: "worker-b".into(),
+                    title: "Check the build".into(),
+                    status: "open".into(),
+                    parent: Some("lead".into()),
+                    workspaces: vec!["ws-worker-b".into()],
+                    created: NOW - 4 * 86_400,
+                    updated: NOW - 7_200,
+                    ..Task::default()
+                },
+            ],
+        }
+    }
+
     fn press(app: &mut App, code: KeyCode) {
         app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
     }
@@ -951,6 +1136,91 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char(' '));
         assert_golden("board-160x50.txt", &mut app, 160, 50);
+    }
+
+    #[test]
+    fn golden_160x50_tree() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-160x50-tree.txt", &mut app, 160, 50);
+    }
+
+    #[test]
+    fn golden_120x40_tree() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_golden("board-120x40-tree.txt", &mut app, 120, 40);
+    }
+
+    #[test]
+    fn a_root_keeps_its_children_and_selection_across_refreshes() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.expanded.contains(&CardKey::Task("lead".into())));
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.cursor.child, Some(0));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.cursor.node, 1);
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("worker-a"));
+
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.cursor.child, Some(0));
+        assert_eq!(app.selected_child().unwrap().workspace, "ws-worker-a");
+
+        let board = tree_board();
+        app.set_board_at(board, NOW);
+        assert_eq!(app.cursor.node, 1);
+        assert_eq!(app.cursor.child, Some(0));
+        assert_eq!(app.selected_task().unwrap().id.as_deref(), Some("worker-a"));
+    }
+
+    #[test]
+    fn collapse_returns_the_selection_to_the_root() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.cursor.node, 1);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.cursor.node, 0);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.expanded.is_empty());
+        assert_eq!(app.cursor.node, 0);
+    }
+
+    #[test]
+    fn detail_names_the_parent_and_the_children() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('i'));
+        let root = render_text(&mut app, 160, 50);
+        assert!(root.contains("children"));
+        assert!(root.contains("Draft the notes"));
+
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        let child = render_text(&mut app, 160, 50);
+        assert!(child.contains("child of lead"));
+    }
+
+    #[test]
+    fn filter_keeps_a_matching_child_under_its_root() {
+        let mut app = App::new_at(tree_board(), NOW);
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "draft".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        let text = render_text(&mut app, 160, 50);
+        assert!(text.contains("Lead the release"));
+        assert!(text.contains("Draft the notes"));
     }
 
     #[test]
@@ -1113,6 +1383,7 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         let top = render_text(&mut app, 60, 16);
         assert!(top.contains("enter"));
+        press(&mut app, KeyCode::PageDown);
         press(&mut app, KeyCode::PageDown);
         let bottom = render_text(&mut app, 60, 16);
         assert!(bottom.contains("quit"));

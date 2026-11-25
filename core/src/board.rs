@@ -345,8 +345,10 @@ impl Board {
         out
     }
 
-    /// The TUI's five derived lanes. A workspace with no open task is its own
-    /// row; archived tasks are hidden.
+    /// The TUI's five derived lanes. Roots are tasks with no parent (or a
+    /// parent the store no longer has); their children travel with them and
+    /// never occupy a lane of their own. A workspace with no open task is its
+    /// own row; archived tasks are hidden.
     pub fn lanes(&self) -> Vec<LaneView> {
         let open: BTreeMap<&str, &Task> = self
             .tasks
@@ -370,15 +372,48 @@ impl Board {
                 _ => standalone.push(workspace.clone()),
             }
         }
-        let mut views: Vec<TaskView> = Vec::new();
-        for (id, task) in &open {
-            let mut workspaces = grouped.remove(*id).unwrap_or_default();
-            workspaces.sort_by(|a, b| a.workspace.cmp(&b.workspace));
-            views.push(TaskView {
-                id: Some((*id).to_string()),
-                title: task.title.clone(),
-                workspaces,
-            });
+        let mut views: BTreeMap<String, TaskView> = open
+            .iter()
+            .map(|(id, task)| {
+                let mut workspaces = grouped.remove(*id).unwrap_or_default();
+                workspaces.sort_by(|a, b| a.workspace.cmp(&b.workspace));
+                (
+                    (*id).to_string(),
+                    TaskView {
+                        id: Some((*id).to_string()),
+                        title: task.title.clone(),
+                        parent: task.parent.clone(),
+                        workspaces,
+                        children: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        let mut roots: Vec<TaskView> = Vec::new();
+        let root_ids: Vec<String> = views
+            .keys()
+            .filter(|id| is_root(&open, id))
+            .cloned()
+            .collect();
+        for id in root_ids {
+            let Some(mut view) = views.remove(&id) else {
+                continue;
+            };
+            let child_ids: Vec<String> = views
+                .iter()
+                .filter(|(_, child)| child.parent.as_deref() == Some(id.as_str()))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for child_id in child_ids {
+                if let Some(child) = views.remove(&child_id) {
+                    view.children.push(child);
+                }
+            }
+            roots.push(view);
+        }
+        // Defensive: a hand-edited deeper or cyclic link must not hide a task.
+        while let Some((_, view)) = views.pop_first() {
+            roots.push(view);
         }
         for workspace in standalone {
             let title = if workspace.description.trim().is_empty() {
@@ -386,12 +421,18 @@ impl Board {
             } else {
                 workspace.description.clone()
             };
-            views.push(TaskView {
+            roots.push(TaskView {
                 id: None,
                 title,
+                parent: None,
                 workspaces: vec![workspace],
+                children: Vec::new(),
             });
         }
+        for view in &mut roots {
+            view.children.sort_by(compare_views);
+        }
+        roots.sort_by(compare_views);
         let mut lanes: Vec<LaneView> = Lane::ALL
             .iter()
             .map(|lane| LaneView {
@@ -399,21 +440,45 @@ impl Board {
                 tasks: Vec::new(),
             })
             .collect();
-        for view in views {
-            let lane = derive_lane(&view.workspaces);
+        for view in roots {
+            let lane = derive_lane(&subtree_rows(&view));
             lanes[lane.index()].tasks.push(view);
-        }
-        for lane in &mut lanes {
-            lane.tasks.sort_by(|a, b| {
-                a.title
-                    .to_lowercase()
-                    .cmp(&b.title.to_lowercase())
-                    .then_with(|| a.title.cmp(&b.title))
-                    .then_with(|| a.id.cmp(&b.id))
-            });
         }
         lanes
     }
+}
+
+/// A task is a root when it has no parent, a missing or archived parent, a
+/// self-link, or a parent that is itself a child. The last case turns a
+/// hand-edited two-level chain into roots rather than losing either task.
+fn is_root(open: &BTreeMap<&str, &Task>, id: &str) -> bool {
+    let Some(task) = open.get(id) else {
+        return false;
+    };
+    match task.parent.as_deref() {
+        None => true,
+        Some(parent) if parent == id => true,
+        Some(parent) => match open.get(parent) {
+            None => true,
+            Some(parent_task) => parent_task.parent.is_some(),
+        },
+    }
+}
+
+fn compare_views(a: &TaskView, b: &TaskView) -> std::cmp::Ordering {
+    a.title
+        .to_lowercase()
+        .cmp(&b.title.to_lowercase())
+        .then_with(|| a.title.cmp(&b.title))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+fn subtree_rows(view: &TaskView) -> Vec<WorkspaceRow> {
+    let mut rows = view.workspaces.clone();
+    for child in &view.children {
+        rows.extend(subtree_rows(child));
+    }
+    rows
 }
 
 fn append_section(out: &mut String, heading: &str, rows: &[String]) {
@@ -823,7 +888,11 @@ impl Lane {
 pub struct TaskView {
     pub id: Option<String>,
     pub title: String,
+    /// Set on a child card; a root has no parent (or a link the store dropped).
+    pub parent: Option<String>,
     pub workspaces: Vec<WorkspaceRow>,
+    /// One level of child task cards. Lanes are derived from the whole subtree.
+    pub children: Vec<TaskView>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -895,6 +964,49 @@ mod tests {
         both.clean = Some(CleanInfo::default());
         both.wait = Some(WaitInfo::default());
         assert_eq!(derive_lane(&[both]), Lane::ToClean);
+    }
+
+    #[test]
+    fn a_child_travels_with_its_root_and_moves_the_root_lane() {
+        let mut lead_ws = row("lead", State::Merged);
+        lead_ws.task = Some("lead".to_string());
+        let mut child_ws = row("child", State::Conflict);
+        child_ws.task = Some("child".to_string());
+        let child = Task {
+            parent: Some("lead".to_string()),
+            ..task("child", "The child", vec!["child"])
+        };
+        let board = Board {
+            workspaces: vec![lead_ws, child_ws],
+            tasks: vec![task("lead", "The lead", vec!["lead"]), child],
+        };
+        let lanes = board.lanes();
+        assert_eq!(lanes.iter().map(|lane| lane.tasks.len()).sum::<usize>(), 1);
+        let blocked = lanes
+            .iter()
+            .find(|lane| lane.lane == Lane::Blocked)
+            .unwrap();
+        assert_eq!(blocked.tasks.len(), 1);
+        assert_eq!(blocked.tasks[0].id.as_deref(), Some("lead"));
+        assert_eq!(blocked.tasks[0].children.len(), 1);
+        assert_eq!(blocked.tasks[0].children[0].id.as_deref(), Some("child"));
+    }
+
+    #[test]
+    fn a_child_of_a_missing_parent_becomes_a_root() {
+        let mut child_ws = row("orphan", State::Unpushed);
+        child_ws.task = Some("orphan".to_string());
+        let board = Board {
+            workspaces: vec![child_ws],
+            tasks: vec![Task {
+                parent: Some("gone".to_string()),
+                ..task("orphan", "The orphan", vec!["orphan"])
+            }],
+        };
+        let lanes = board.lanes();
+        let active = lanes.iter().find(|lane| lane.lane == Lane::Active).unwrap();
+        assert_eq!(active.tasks.len(), 1);
+        assert_eq!(active.tasks[0].id.as_deref(), Some("orphan"));
     }
 
     #[test]
