@@ -79,7 +79,7 @@ and `cargo build --release -p rookery-tui`. The v0.4.0 shell remains as
 | `rookery clean [--current\|<workspace>]`                            | mark a workspace for the cleanup sweep                                                |
 | `rookery clean --unmark [--current\|<workspace>]`                   | clear the cleanup mark                                                                |
 | `rookery clean --apply`                                             | remove marked workspaces that are safe to remove                                      |
-| `rookery open <workspace\|task>`                                    | focus a workspace's seat                                                              |
+| `rookery open <workspace\|task>`                                    | focus a workspace's seat, starting one in a new tab when none runs                    |
 | `rookery wait <task> [reason...]`                                   | park a workspace; gc keeps it until `rookery go`                                      |
 | `rookery go <task>`                                                 | release a parked workspace                                                            |
 | `rookery done [--force] <task>`                                     | remove a finished workspace                                                           |
@@ -160,8 +160,10 @@ to close an open task. Every removal path clears both markers.
 
 `rookery open` focuses an existing seat through the CLI: a workspace name
 resolves directly, and a task id resolves to a live grouped workspace or the
-first one jj still lists. The verb is backend-neutral; the herdr-specific
-lookup stays inside the command.
+first one jj still lists. When no herdr pane runs in the workspace, `open`
+starts a seat there in a new tab through the same path as `rookery herdr`; a
+live workspace is still refused rather than shared with a second agent. The
+verb is backend-neutral; the herdr-specific lookup stays inside the command.
 
 ## Board TUI
 
