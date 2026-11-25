@@ -135,7 +135,10 @@ with zero workspaces as a backlog item.
 
 `task done` refuses to run from a workspace grouped under the task: a worker
 cannot finish its own task. Run it from the lead's ungrouped workspace or from
-the primary checkout. Workspaces with unpushed, in-flight, or conflicted work
+the primary checkout. An open task that has not been touched for
+`ROOKERY_TASK_STALE_DAYS` (default 14) surfaces in `gc` output once, so a lead
+that disappeared cannot hold workspaces silently; `task note` resets the
+clock. Workspaces with unpushed, in-flight, or conflicted work
 are still marked, but `clean --apply` keeps them and names the reason, so the
 task cannot archive until that work is merged or deliberately discarded.
 
@@ -251,6 +254,8 @@ The TUI has no environment counterpart.
 ## Environment
 
 - `ROOKERY_V2=1` runs the `opencode2` entry point instead of `opencode`
+- `ROOKERY_TASK_STALE_DAYS` (default 14) surfaces an open task that has not
+  been touched; `task note` resets the clock
 - `ROOKERY_BOARD_JOBS` (default 8, clamped 1-32) bounds the board's parallel work
 - `ROOKERY_LIVE_EXCLUDE` adds a `grep -E` pattern to the liveness exclusion
 - `ROOKERY_HOOK_{PRE,POST}_{CREATE,DELETE}` run around create and remove, with

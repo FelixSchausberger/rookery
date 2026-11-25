@@ -277,6 +277,11 @@ touch -d "2 days ago" "$ROOKERY_BASE/${ws_prefix}epsilon"
 out=$(rookery gc)
 printf '%s' "$out" | grep -Fq "keeping 'epsilon' (task 'lifecycle' open)" || fail "gc reclaimed an open task workspace: $out"
 [ -d "$ROOKERY_BASE/${ws_prefix}epsilon" ] || fail "gc removed an open task workspace"
+tmp=$(mktemp)
+jq '.tasks |= map(if .id == "lifecycle" then .updated = 1 else . end)' "$ROOKERY_BASE/tasks.json" >"$tmp"
+mv "$tmp" "$ROOKERY_BASE/tasks.json"
+out=$(rookery gc)
+printf '%s' "$out" | grep -Fq "task 'lifecycle' has been open" || fail "gc did not nudge a stale open task: $out"
 rookery task "done" lifecycle >/dev/null
 printf '%s\n' "$(rookery task list --json)" | jq -e 'select(.id == "lifecycle" and .status == "done")' >/dev/null 2>&1 || fail "task done did not set the status"
 out=$(rookery clean --apply)

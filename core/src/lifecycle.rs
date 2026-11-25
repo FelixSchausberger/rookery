@@ -310,7 +310,7 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
         jj::fetch();
     }
     let store = Store::new(&config.base);
-    let open_tasks: HashMap<String, String> = match store.read() {
+    let open_tasks: HashMap<String, (String, i64)> = match store.read() {
         Ok(state) => {
             let mut open = HashMap::new();
             for task in state.tasks {
@@ -318,8 +318,9 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
                     continue;
                 }
                 let id = task.id;
+                let updated = task.updated;
                 for workspace in task.workspaces {
-                    open.insert(workspace, id.clone());
+                    open.insert(workspace, (id.clone(), updated));
                 }
             }
             open
@@ -330,6 +331,7 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
             )]);
         }
     };
+    let mut nudged: HashSet<String> = HashSet::new();
     let workspaces = jj::workspace_list()?;
     let snapshot = ProcSnapshot::scan(None);
     let provider = SqliteSessions::new(config.session_db.clone());
@@ -378,11 +380,19 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
         // An open task is an explicit hold: the lead has not finished the
         // work, so gc must not reclaim a worker between reports even when the
         // workspace is momentarily empty.
-        if let Some(id) = open_tasks.get(&entry.name) {
+        if let Some((id, updated)) = open_tasks.get(&entry.name) {
             lines.push(Line::out(format!(
                 "rookery gc: keeping '{}' (task '{id}' open)",
                 entry.name
             )));
+            // A lead that disappeared must not hold workspaces silently. The
+            // nudge is once per task, not once per grouped workspace.
+            let days = (now - updated) / 86400;
+            if days >= config.task_stale_days && nudged.insert(id.clone()) {
+                lines.push(Line::out(format!(
+                    "rookery gc: task '{id}' has been open {days} days - finish it ('rookery task done {id}') or record why with 'rookery task note {id} ...'"
+                )));
+            }
             continue;
         }
         let state = match jj::state(config, &entry.name, Some(&entry.description)) {
