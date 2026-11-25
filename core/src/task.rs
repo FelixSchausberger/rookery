@@ -352,20 +352,19 @@ impl Store {
     ) -> Option<String> {
         let store = self.read_tolerant();
         let task = store.tasks.into_iter().find(|task| task.id == id)?;
-        let mut chosen = None;
-        let mut live_workspace = None;
+        let mut first = None;
         for workspace in task.workspaces {
             if !exists(&workspace) {
                 continue;
             }
-            if chosen.is_none() {
-                chosen = Some(workspace.clone());
+            if live(&workspace) {
+                return Some(workspace);
             }
-            if live_workspace.is_none() && live(&workspace) {
-                live_workspace = Some(workspace);
+            if first.is_none() {
+                first = Some(workspace);
             }
         }
-        live_workspace.or(chosen)
+        first
     }
 }
 
