@@ -329,6 +329,7 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
     };
     let mut nudged: HashSet<String> = HashSet::new();
     let workspaces = jj::workspace_list()?;
+    let known: HashSet<String> = workspaces.iter().map(|entry| entry.name.clone()).collect();
     let snapshot = ProcSnapshot::scan(None);
     let provider = SqliteSessions::new(config.session_db.clone());
     let sessions: HashSet<String> = provider
@@ -455,7 +456,50 @@ pub fn gc(config: &Config, fetch_first: bool, warnings: &mut Vec<String>) -> Res
             state.as_str()
         )));
     }
+    // A workspace forgotten by another path leaves its wait marker behind,
+    // and `go` cannot clear it because the workspace is gone. The snapshot is
+    // not authoritative: a workspace added after it must keep its fresh
+    // marker, so each candidate is re-checked against jj before removal.
+    for (name, marker) in stale_wait_markers(&config.base, &known) {
+        if !matches!(jj::exists(&name), Ok(false)) {
+            continue;
+        }
+        match remove_with_rip(&marker) {
+            Ok(()) => lines.push(Line::out(format!(
+                "rookery gc: dropped the stale wait marker for '{name}'"
+            ))),
+            Err(err) => lines.push(Line::err(format!(
+                "rookery gc: cannot drop the stale wait marker for '{name}': {err}"
+            ))),
+        }
+    }
     Ok(lines)
+}
+
+/// Wait markers whose workspace is not in the current jj list. Markers are
+/// keyed by workspace name and live beside the workspace directories; a
+/// marker with an invalid name or for a known workspace is not stale.
+fn stale_wait_markers(base: &Path, known: &HashSet<String>) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = fs::read_dir(base) else {
+        return Vec::new();
+    };
+    let mut stale = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".wait"))
+        else {
+            continue;
+        };
+        if !valid_task(name) || known.contains(name) {
+            continue;
+        }
+        stale.push((name.to_string(), path));
+    }
+    stale.sort();
+    stale
 }
 
 pub fn clean_mark(
@@ -894,4 +938,31 @@ fn tab_rename(task: &str) {
     let _ = Command::new("herdr")
         .args(["tab", "rename", &tab, task])
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::fs;
+
+    #[test]
+    fn stale_wait_markers_skip_known_and_foreign_names() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "kept.wait",
+            "gone.wait",
+            "gone.too.wait",
+            "bad name.wait",
+            "notes.txt",
+        ] {
+            fs::write(dir.path().join(name), "reason\n1\n").unwrap();
+        }
+        let known = HashSet::from(["kept".to_string(), "default".to_string()]);
+        let stale: Vec<String> = stale_wait_markers(dir.path(), &known)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(stale, vec!["gone", "gone.too"]);
+    }
 }
